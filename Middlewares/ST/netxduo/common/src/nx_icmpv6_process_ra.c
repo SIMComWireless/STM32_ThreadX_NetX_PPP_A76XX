@@ -1,13 +1,13 @@
-/**************************************************************************/
-/*                                                                        */
-/*       Copyright (c) Microsoft Corporation. All rights reserved.        */
-/*                                                                        */
-/*       This software is licensed under the Microsoft Software License   */
-/*       Terms for Microsoft Azure RTOS. Full text of the license can be  */
-/*       found in the LICENSE file at https://aka.ms/AzureRTOS_EULA       */
-/*       and in the root directory of this software.                      */
-/*                                                                        */
-/**************************************************************************/
+/***************************************************************************
+ * Copyright (c) 2024 Microsoft Corporation
+ * Copyright (c) 2025-present Eclipse ThreadX Contributors
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the MIT License which is available at
+ * https://opensource.org/licenses/MIT.
+ *
+ * SPDX-License-Identifier: MIT
+ **************************************************************************/
 
 /**************************************************************************/
 /**************************************************************************/
@@ -37,7 +37,7 @@
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nx_icmpv6_process_ra                               PORTABLE C      */
-/*                                                           6.1.11       */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -71,19 +71,6 @@
 /*                                                                        */
 /*    _nx_icmpv6_packet_process             Main ICMP packet pocess       */
 /*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s), improved */
-/*                                            option length verification, */
-/*                                            resulting in version 6.1    */
-/*  04-25-2022     Yuxin Zhou               Modified comment(s), and      */
-/*                                            added internal ip address   */
-/*                                            change notification,        */
-/*                                            resulting in version 6.1.11 */
-/*                                                                        */
 /**************************************************************************/
 VOID _nx_icmpv6_process_ra(NX_IP *ip_ptr, NX_PACKET *packet_ptr)
 {
@@ -111,6 +98,26 @@ UINT                          interface_index;
 
     /* Add debug information. */
     NX_PACKET_DEBUG(__FILE__, __LINE__, packet_ptr);
+
+    /* Check packet length is at least sizeof(NX_ICMPV6_RA). */
+#ifndef NX_DISABLE_RX_SIZE_CHECKING
+    if ((packet_ptr -> nx_packet_length < sizeof(NX_ICMPV6_RA))
+#ifndef NX_DISABLE_PACKET_CHAIN
+        || (packet_ptr -> nx_packet_next) /* Ignore chained packet.  */
+#endif /* NX_DISABLE_PACKET_CHAIN */
+        )
+    {
+#ifndef NX_DISABLE_ICMP_INFO
+
+        /* Increment the ICMP invalid message count.  */
+        ip_ptr -> nx_ip_icmp_invalid_packets++;
+#endif
+
+        /* Invalid ICMP message, just release it.  */
+        _nx_packet_release(packet_ptr);
+        return;
+    }
+#endif /* NX_DISABLE_RX_SIZE_CHECKING */
 
     /* Initialize the ND cache table entry to NULL */
     nd_entry = NX_NULL;

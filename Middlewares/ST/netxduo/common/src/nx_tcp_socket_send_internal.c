@@ -1,13 +1,13 @@
-/**************************************************************************/
-/*                                                                        */
-/*       Copyright (c) Microsoft Corporation. All rights reserved.        */
-/*                                                                        */
-/*       This software is licensed under the Microsoft Software License   */
-/*       Terms for Microsoft Azure RTOS. Full text of the license can be  */
-/*       found in the LICENSE file at https://aka.ms/AzureRTOS_EULA       */
-/*       and in the root directory of this software.                      */
-/*                                                                        */
-/**************************************************************************/
+/***************************************************************************
+ * Copyright (c) 2024 Microsoft Corporation
+ * Copyright (c) 2025-present Eclipse ThreadX Contributors
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the MIT License which is available at
+ * https://opensource.org/licenses/MIT.
+ *
+ * SPDX-License-Identifier: MIT
+ **************************************************************************/
 
 
 /**************************************************************************/
@@ -44,7 +44,7 @@
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nx_tcp_socket_driver_send                          PORTABLE C      */
-/*                                                           6.1.8        */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -71,12 +71,6 @@
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    _nx_tcp_socket_send_internal                                        */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  08-02-2021     Yuxin Zhou               Initial Version 6.1.8         */
 /*                                                                        */
 /**************************************************************************/
 static UINT _nx_tcp_socket_driver_send(NX_TCP_SOCKET *socket_ptr, NX_PACKET *packet_ptr, ULONG wait_option)
@@ -245,25 +239,6 @@ NX_TCP_HEADER  *header_ptr;
 /*    This is an internal function, only being called by                  */
 /*    _nx_tcp_socket_send().  The caller guarantees that the payload      */
 /*    size does not exceed MSS.                                           */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
-/*  08-02-2021     Yuxin Zhou               Modified comment(s), and      */
-/*                                            supported TCP/IP offload,   */
-/*                                            resulting in version 6.1.8  */
-/*  10-15-2021     Yuxin Zhou               Modified comment(s), and      */
-/*                                            fixed the bug of race       */
-/*                                            condition,                  */
-/*                                            resulting in version 6.1.9  */
-/*  01-31-2022     Yuxin Zhou               Modified comment(s), and      */
-/*                                            improved the throughput of  */
-/*                                            TCP transmission,           */
-/*                                            resulting in version 6.1.10 */
 /*                                                                        */
 /**************************************************************************/
 UINT  _nx_tcp_socket_send_internal(NX_TCP_SOCKET *socket_ptr, NX_PACKET *packet_ptr, ULONG wait_option)
@@ -825,6 +800,11 @@ UINT            compute_checksum = 1;
                 {
                     _nx_packet_release(send_packet);
                 }
+                else
+                {
+                    send_packet -> nx_packet_prepend_ptr += sizeof(NX_TCP_HEADER);
+                    send_packet -> nx_packet_length -= (ULONG)sizeof(NX_TCP_HEADER);
+                }
 
                 /* Regain exclusive access to IP instance. */
                 tx_mutex_get(&(ip_ptr -> nx_ip_protection), TX_WAIT_FOREVER);
@@ -918,8 +898,15 @@ UINT            compute_checksum = 1;
             socket_ptr -> nx_tcp_socket_bytes_sent += send_packet -> nx_packet_length - (ULONG)sizeof(NX_TCP_HEADER);
 #endif /* NX_DISABLE_TCP_INFO */
 
+#ifdef NX_ENABLE_VLAN
+            if (socket_ptr -> nx_tcp_socket_vlan_priority != NX_VLAN_PRIORITY_INVALID)
+            {
+                send_packet -> nx_packet_vlan_priority = socket_ptr -> nx_tcp_socket_vlan_priority;
+            }
+#endif /* NX_ENABLE_VLAN */
+
             /* If trace is enabled, insert this event into the trace buffer.  */
-            NX_TRACE_IN_LINE_INSERT(NX_TRACE_INTERNAL_TCP_DATA_SEND, ip_ptr, socket_ptr, send_packet, socket_ptr -> nx_tcp_socket_tx_sequence - (send_packet -> nx_packet_length - sizeof(NX_TCP_HEADER)), NX_TRACE_INTERNAL_EVENTS, 0, 0);
+            NX_TRACE_IN_LINE_INSERT(NX_TRACE_INTERNAL_TCP_DATA_SEND, ip_ptr, socket_ptr, send_packet, socket_ptr -> nx_tcp_socket_tx_sequence - (send_packet -> nx_packet_length - (ULONG)sizeof(NX_TCP_HEADER)), NX_TRACE_INTERNAL_EVENTS, 0, 0);
 
             /* Send the TCP packet to the IP component.  */
 #ifndef NX_DISABLE_IPV4

@@ -1,13 +1,13 @@
-/**************************************************************************/
-/*                                                                        */
-/*       Copyright (c) Microsoft Corporation. All rights reserved.        */
-/*                                                                        */
-/*       This software is licensed under the Microsoft Software License   */
-/*       Terms for Microsoft Azure RTOS. Full text of the license can be  */
-/*       found in the LICENSE file at https://aka.ms/AzureRTOS_EULA       */
-/*       and in the root directory of this software.                      */
-/*                                                                        */
-/**************************************************************************/
+/***************************************************************************
+ * Copyright (c) 2024 Microsoft Corporation
+ * Copyright (c) 2025-present Eclipse ThreadX Contributors
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the MIT License which is available at
+ * https://opensource.org/licenses/MIT.
+ *
+ * SPDX-License-Identifier: MIT
+ **************************************************************************/
 
 
 /**************************************************************************/
@@ -45,7 +45,7 @@
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nx_icmpv6_process_packet_too_big                   PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -80,14 +80,6 @@
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
-/*                                                                        */
 /**************************************************************************/
 UINT _nx_icmpv6_process_packet_too_big(NX_IP *ip_ptr, NX_PACKET *packet_ptr)
 {
@@ -105,7 +97,11 @@ NX_INTERFACE              *if_ptr;
     NX_PACKET_DEBUG(__FILE__, __LINE__, packet_ptr);
 
 #ifndef NX_DISABLE_RX_SIZE_CHECKING
-    if (packet_ptr -> nx_packet_length < sizeof(NX_ICMPV6_OPTION_MTU))
+    if ((packet_ptr -> nx_packet_length < (sizeof(NX_ICMPV6_OPTION_MTU) + sizeof(NX_IPV6_HEADER)))
+#ifndef NX_DISABLE_PACKET_CHAIN
+        || (packet_ptr -> nx_packet_next) /* Ignore chained packet.  */
+#endif /* NX_DISABLE_PACKET_CHAIN */
+        )
     {
 #ifndef NX_DISABLE_ICMP_INFO
 
@@ -129,7 +125,7 @@ NX_INTERFACE              *if_ptr;
 
     /* Parse the original sender data. */
     /*lint -e{929} -e{826} -e{740} suppress cast of pointer to pointer, since it is necessary  */
-    original_ip_header_ptr = (NX_IPV6_HEADER *)(&(icmpv6_mtu_option_ptr ->  nx_icmpv6_option_mtu_message));
+    original_ip_header_ptr = (NX_IPV6_HEADER *)(packet_ptr -> nx_packet_prepend_ptr + sizeof(NX_ICMPV6_OPTION_MTU));
 
     /* Extract the original sender from the IP header. */
     packet_ptr -> nx_packet_prepend_ptr -= sizeof(NX_IPV6_HEADER);
@@ -157,6 +153,20 @@ NX_INTERFACE              *if_ptr;
         status = _nx_icmpv6_dest_table_add(ip_ptr, original_destination_ip,
                                            &dest_entry_ptr, &default_next_hop_address[0], mtu, 0,
                                            packet_ptr -> nx_packet_address.nx_packet_ipv6_address_ptr);
+
+        /* If a new ND cache is created, force the entry to be "INCOMPLETE" so that the timer logic will
+           re-try, and then timeout if no responses are received. */
+        if(dest_entry_ptr -> nx_ipv6_destination_entry_nd_entry != NX_NULL)
+        {
+            ND_CACHE_ENTRY *nd_entry = dest_entry_ptr -> nx_ipv6_destination_entry_nd_entry;
+            if(nd_entry -> nx_nd_cache_nd_status == ND_CACHE_STATE_CREATED)
+            {
+                _nx_icmpv6_send_ns(ip_ptr, &nd_entry -> nx_nd_cache_dest_ip[0], 1, 
+                                   nd_entry -> nx_nd_cache_outgoing_address, 0, nd_entry);
+                nd_entry->nx_nd_cache_num_solicit = NX_MAX_MULTICAST_SOLICIT - 1;
+                nd_entry->nx_nd_cache_timer_tick = ip_ptr -> nx_ipv6_retrans_timer_ticks;
+            }
+        }
     }
 
     /* Release the packet. */

@@ -1,13 +1,13 @@
-/**************************************************************************/
-/*                                                                        */
-/*       Copyright (c) Microsoft Corporation. All rights reserved.        */
-/*                                                                        */
-/*       This software is licensed under the Microsoft Software License   */
-/*       Terms for Microsoft Azure RTOS. Full text of the license can be  */
-/*       found in the LICENSE file at https://aka.ms/AzureRTOS_EULA       */
-/*       and in the root directory of this software.                      */
-/*                                                                        */
-/**************************************************************************/
+/***************************************************************************
+ * Copyright (c) 2024 Microsoft Corporation
+ * Copyright (c) 2025-present Eclipse ThreadX Contributors
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the MIT License which is available at
+ * https://opensource.org/licenses/MIT.
+ *
+ * SPDX-License-Identifier: MIT
+ **************************************************************************/
 
 
 /**************************************************************************/
@@ -37,7 +37,7 @@
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nx_tcp_socket_state_data_trim                      PORTABLE C      */
-/*                                                           6.2.0        */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -64,17 +64,6 @@
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    _nx_tcp_socket_state_data_check       Process TCP packet for socket */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
-/*  10-31-2022     Wenhui Xie               Modified comment(s), and      */
-/*                                            supported HTTP Proxy,       */
-/*                                            resulting in version 6.2.0  */
 /*                                                                        */
 /**************************************************************************/
 VOID _nx_tcp_socket_state_data_trim(NX_PACKET *packet_ptr, ULONG amount)
@@ -143,7 +132,7 @@ NX_PACKET *work_ptr;
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nx_tcp_socket_state_data_trim_front                PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -170,15 +159,6 @@ NX_PACKET *work_ptr;
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    _nx_tcp_socket_state_data_check       Process TCP packet for socket */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s), and      */
-/*                                            verified memmove use cases, */
-/*                                            resulting in version 6.1    */
 /*                                                                        */
 /**************************************************************************/
 VOID _nx_tcp_socket_state_data_trim_front(NX_PACKET *packet_ptr, ULONG amount)
@@ -282,7 +262,7 @@ ULONG      work_length;
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nx_tcp_socket_state_data_check                     PORTABLE C      */
-/*                                                           6.2.0        */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -315,24 +295,6 @@ ULONG      work_length;
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    _nx_tcp_socket_packet_process         Process TCP packet for socket */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
-/*  08-02-2021     Yuxin Zhou               Modified comment(s), and      */
-/*                                            supported TCP/IP offload,   */
-/*                                            resulting in version 6.1.8  */
-/*  01-31-2022     Yuxin Zhou               Modified comment(s), and      */
-/*                                            fixed unsigned integers     */
-/*                                            comparison,                 */
-/*                                            resulting in version 6.1.10 */
-/*  10-31-2022     Wenhui Xie               Modified comment(s), and      */
-/*                                            supported HTTP Proxy,       */
-/*                                            resulting in version 6.2.0  */
 /*                                                                        */
 /**************************************************************************/
 UINT  _nx_tcp_socket_state_data_check(NX_TCP_SOCKET *socket_ptr, NX_PACKET *packet_ptr)
@@ -925,14 +887,15 @@ NX_IP         *ip_ptr;
             if ((INT)(expected_sequence - search_begin_sequence) >= 0)
             {
 
+                /* Increment the acked packet count.  */
+                acked_packets++;
+
                 if ((INT)(search_end_sequence - expected_sequence) > 0)
                 {
                     /* Sequence number is within this packet.  Advance sequence number. */
                     expected_sequence = search_end_sequence;
 
                     socket_ptr -> nx_tcp_socket_rx_sequence = expected_sequence;
-
-                    acked_packets++;
 
                     /* Mark this packet as ready for retrieval.  */
                     /*lint -e{923} suppress cast of ULONG to pointer.  */

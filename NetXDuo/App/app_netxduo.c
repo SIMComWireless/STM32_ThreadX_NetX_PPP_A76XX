@@ -221,6 +221,68 @@ static void ppp_read_thread_entry(ULONG param)
 }
 
 /**
+  * @brief  Print negotiated IP addresses (IPv4 / IPv6 / dual-stack)
+  * @note   Reads addresses from the IP instance after PPP link-up.
+  *         IPv6 support is conditional on FEATURE_NX_IPV6.
+  */
+static void print_ip_addresses(void)
+{
+    UINT status;
+
+    /* ---- IPv4 ---- */
+    ULONG ipv4_addr = 0, ipv4_mask = 0;
+    status = nx_ip_address_get(&ip_0, &ipv4_addr, &ipv4_mask);
+    if (status == NX_SUCCESS && ipv4_addr != 0)
+    {
+        LOG_I(TAG_PPP, "IPv4: %lu.%lu.%lu.%lu  Mask: %lu.%lu.%lu.%lu",
+              (ipv4_addr >> 24) & 0xFF, (ipv4_addr >> 16) & 0xFF,
+              (ipv4_addr >> 8)  & 0xFF,  ipv4_addr & 0xFF,
+              (ipv4_mask >> 24) & 0xFF, (ipv4_mask >> 16) & 0xFF,
+              (ipv4_mask >> 8)  & 0xFF,  ipv4_mask & 0xFF);
+    }
+    else
+    {
+        LOG_W(TAG_PPP, "IPv4: not assigned");
+    }
+
+    /* ---- IPv6 ---- */
+#ifdef FEATURE_NX_IPV6
+    {
+        UINT has_ipv6 = 0;
+        for (UINT i = 0; i < NX_MAX_IPV6_ADDRESSES; i++)
+        {
+            NXD_ADDRESS nxd_addr;
+            ULONG prefix_len = 0;
+            UINT  if_idx = 0;
+
+            status = nxd_ipv6_address_get(&ip_0, i, &nxd_addr, &prefix_len, &if_idx);
+            if (status == NX_SUCCESS && nxd_addr.nxd_ip_address.v6[0] != 0)
+            {
+                LOG_I(TAG_PPP, "IPv6[%u]: %04lX:%04lX:%04lX:%04lX:%04lX:%04lX:%04lX:%04lX /%lu (if=%u)",
+                      i,
+                      (nxd_addr.nxd_ip_address.v6[0] >> 16) & 0xFFFF,
+                       nxd_addr.nxd_ip_address.v6[0] & 0xFFFF,
+                      (nxd_addr.nxd_ip_address.v6[1] >> 16) & 0xFFFF,
+                       nxd_addr.nxd_ip_address.v6[1] & 0xFFFF,
+                      (nxd_addr.nxd_ip_address.v6[2] >> 16) & 0xFFFF,
+                       nxd_addr.nxd_ip_address.v6[2] & 0xFFFF,
+                      (nxd_addr.nxd_ip_address.v6[3] >> 16) & 0xFFFF,
+                       nxd_addr.nxd_ip_address.v6[3] & 0xFFFF,
+                      prefix_len, if_idx);
+                has_ipv6 = 1;
+            }
+        }
+        if (!has_ipv6)
+        {
+            LOG_W(TAG_PPP, "IPv6: not assigned");
+        }
+    }
+#else
+    LOG_D(TAG_PPP, "IPv6: disabled (NX_DISABLE_IPV6)");
+#endif /* FEATURE_NX_IPV6 */
+}
+
+/**
   * @brief  NTP sync thread
   * @note   Waits for PPP link-up, then does DNS resolution + SNTP time sync
   */
@@ -243,25 +305,10 @@ static void ntp_thread_entry(ULONG param)
         /* Small delay for IP stack to stabilize */
         tx_thread_sleep(1000);
 
-        /* ---- Step 1: Get DNS server from PPP ---- */
-        ULONG dns_server_addr = 0;
-        status = nx_ppp_dns_address_get(&ppp_0, &dns_server_addr);
-        if (status != NX_SUCCESS || dns_server_addr == 0)
-        {
-            /* Fallback to well-known DNS servers */
-            LOG_W(TAG_DNS, "No DNS from PPP, using fallback 8.8.8.8");
-            dns_server_addr = IP_ADDRESS(8, 8, 8, 8);
-        }
-        else
-        {
-            LOG_I(TAG_DNS, "PPP DNS server: %lu.%lu.%lu.%lu",
-                  (dns_server_addr >> 24) & 0xFF,
-                  (dns_server_addr >> 16) & 0xFF,
-                  (dns_server_addr >> 8) & 0xFF,
-                  dns_server_addr & 0xFF);
-        }
+        /* Print negotiated IP addresses */
+        print_ip_addresses();
 
-        /* ---- Step 2: Create DNS client ---- */
+        /* ---- Step 1: Create DNS client ---- */
         status = nx_dns_create(&dns_client, &ip_0, (UCHAR *)"DNS Client");
         if (status != NX_SUCCESS)
         {
@@ -277,10 +324,50 @@ static void ntp_thread_entry(ULONG param)
             continue;
         }
 
-        status = nx_dns_server_add(&dns_client, dns_server_addr);
-        if (status != NX_SUCCESS)
+        /* ---- Step 2: Add DNS servers ---- */
+        /* DNS server list: PPP DNS first, then public fallbacks */
+        static const ULONG fallback_dns[] = {
+            IP_ADDRESS(114, 114, 114, 114),  /* China Telecom public DNS */
+            IP_ADDRESS(223,   5,   5,   5),  /* AliDNS */
+            IP_ADDRESS(8,     8,   8,   8),  /* Google DNS */
+        };
+
+        /* Try PPP-negotiated DNS first */
+        ULONG dns_server_addr = 0;
+        UINT dns_count = 0;
+        status = nx_ppp_dns_address_get(&ppp_0, &dns_server_addr);
+        if (status == NX_SUCCESS && dns_server_addr != 0)
         {
-            LOG_E(TAG_DNS, "DNS server add failed: 0x%02X", status);
+            LOG_I(TAG_DNS, "PPP DNS: %lu.%lu.%lu.%lu",
+                  (dns_server_addr >> 24) & 0xFF,
+                  (dns_server_addr >> 16) & 0xFF,
+                  (dns_server_addr >> 8) & 0xFF,
+                  dns_server_addr & 0xFF);
+            nx_dns_server_add(&dns_client, dns_server_addr);
+            dns_count++;
+        }
+        else
+        {
+            LOG_W(TAG_DNS, "No DNS from PPP negotiation");
+        }
+
+        /* Add fallback DNS servers */
+        for (UINT i = 0; i < sizeof(fallback_dns) / sizeof(fallback_dns[0]); i++)
+        {
+            if (nx_dns_server_add(&dns_client, fallback_dns[i]) == NX_SUCCESS)
+            {
+                LOG_I(TAG_DNS, "Fallback DNS[%u]: %lu.%lu.%lu.%lu", i,
+                      (fallback_dns[i] >> 24) & 0xFF,
+                      (fallback_dns[i] >> 16) & 0xFF,
+                      (fallback_dns[i] >> 8) & 0xFF,
+                      fallback_dns[i] & 0xFF);
+                dns_count++;
+            }
+        }
+
+        if (dns_count == 0)
+        {
+            LOG_E(TAG_DNS, "No DNS servers available!");
             nx_dns_delete(&dns_client);
             continue;
         }
@@ -290,7 +377,7 @@ static void ntp_thread_entry(ULONG param)
         status = nx_dns_host_by_name_get(&dns_client,
                                           (UCHAR *)NTP_SERVER_HOST,
                                           &ntp_ip_address,
-                                          5 * NX_IP_PERIODIC_RATE);
+                                          10 * NX_IP_PERIODIC_RATE);
         if (status != NX_SUCCESS)
         {
             LOG_E(TAG_DNS, "DNS resolution failed: 0x%02X", status);

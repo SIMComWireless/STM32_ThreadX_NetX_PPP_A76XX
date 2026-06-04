@@ -1,13 +1,13 @@
-/**************************************************************************/
-/*                                                                        */
-/*       Copyright (c) Microsoft Corporation. All rights reserved.        */
-/*                                                                        */
-/*       This software is licensed under the Microsoft Software License   */
-/*       Terms for Microsoft Azure RTOS. Full text of the license can be  */
-/*       found in the LICENSE file at https://aka.ms/AzureRTOS_EULA       */
-/*       and in the root directory of this software.                      */
-/*                                                                        */
-/**************************************************************************/
+/***************************************************************************
+ * Copyright (c) 2024 Microsoft Corporation
+ * Copyright (c) 2025-present Eclipse ThreadX Contributors
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the MIT License which is available at
+ * https://opensource.org/licenses/MIT.
+ *
+ * SPDX-License-Identifier: MIT
+ **************************************************************************/
 
 
 /**************************************************************************/
@@ -44,7 +44,7 @@
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nx_udp_socket_driver_send                          PORTABLE C      */
-/*                                                           6.1.10       */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -73,15 +73,6 @@
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    _nxd_udp_socket_send                                                */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  08-02-2021     Yuxin Zhou               Initial Version 6.1.8         */
-/*  01-31-2022     Yuxin Zhou               Modified comment(s), corrected*/
-/*                                            the logic for queued packet,*/
-/*                                            resulting in version 6.1.10 */
 /*                                                                        */
 /**************************************************************************/
 static UINT _nx_udp_socket_driver_send(NX_UDP_SOCKET *socket_ptr,
@@ -229,7 +220,7 @@ UINT            packet_reset = NX_FALSE;
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nxd_udp_socket_send                                PORTABLE C      */
-/*                                                           6.1.8        */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -267,17 +258,6 @@ UINT            packet_reset = NX_FALSE;
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    Application Code                                                    */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
-/*  08-02-2021     Yuxin Zhou               Modified comment(s), and      */
-/*                                            supported TCP/IP offload,   */
-/*                                            resulting in version 6.1.8  */
 /*                                                                        */
 /**************************************************************************/
 UINT  _nxd_udp_socket_send(NX_UDP_SOCKET *socket_ptr,
@@ -604,6 +584,13 @@ UINT           compute_checksum = 1;
         return(_nx_udp_socket_driver_send(socket_ptr, packet_ptr, &ip_src_address, ip_address, port));
     }
 #endif /* NX_ENABLE_TCPIP_OFFLOAD */
+
+#ifdef NX_ENABLE_VLAN
+    if (socket_ptr -> nx_udp_socket_vlan_priority != NX_VLAN_PRIORITY_INVALID)
+    {
+        packet_ptr -> nx_packet_vlan_priority = socket_ptr -> nx_udp_socket_vlan_priority;
+    }
+#endif /* NX_ENABLE_VLAN */
 
 #ifndef NX_DISABLE_IPV4
     /* Send the UDP packet to the IPv4 component.  */

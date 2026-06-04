@@ -1,13 +1,13 @@
-/**************************************************************************/
-/*                                                                        */
-/*       Copyright (c) Microsoft Corporation. All rights reserved.        */
-/*                                                                        */
-/*       This software is licensed under the Microsoft Software License   */
-/*       Terms for Microsoft Azure RTOS. Full text of the license can be  */
-/*       found in the LICENSE file at https://aka.ms/AzureRTOS_EULA       */
-/*       and in the root directory of this software.                      */
-/*                                                                        */
-/**************************************************************************/
+/***************************************************************************
+ * Copyright (c) 2024 Microsoft Corporation
+ * Copyright (c) 2025-present Eclipse ThreadX Contributors
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the MIT License which is available at
+ * https://opensource.org/licenses/MIT.
+ *
+ * SPDX-License-Identifier: MIT
+ **************************************************************************/
 
 #define NX_SOURCE_CODE
 
@@ -21,7 +21,7 @@
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    CHECK_IP_ADDRESSES_BY_PREFIX                        PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -50,14 +50,6 @@
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    NetX Source Code                                                    */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
 /*                                                                        */
 /**************************************************************************/
 INT CHECK_IP_ADDRESSES_BY_PREFIX(ULONG *ip_addr1, ULONG *ip_addr2,
@@ -118,7 +110,7 @@ ULONG mask;
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    CHECK_IPV6_ADDRESSES_SAME                           PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -147,14 +139,6 @@ ULONG mask;
 /*                                                                        */
 /*    NetX Source Code                                                    */
 /*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
-/*                                                                        */
 /**************************************************************************/
 INT CHECK_IPV6_ADDRESSES_SAME(ULONG *ip_addr1, ULONG *ip_addr2)
 {
@@ -177,7 +161,7 @@ INT CHECK_IPV6_ADDRESSES_SAME(ULONG *ip_addr1, ULONG *ip_addr2)
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    CHECK_IPV6_ADDRESS_RANGE                            PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -206,14 +190,6 @@ INT CHECK_IPV6_ADDRESSES_SAME(ULONG *ip_addr1, ULONG *ip_addr2)
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    NetX Source Code                                                    */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
 /*                                                                        */
 /**************************************************************************/
 INT CHECK_IPV6_ADDRESS_RANGE(ULONG *ip_addr_start, ULONG *ip_addr_end, ULONG *ip_addr)
@@ -307,7 +283,7 @@ INT ip_addr_cmp1 = 0, ip_addr_cmp2 = 0;
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    CHECK_UNSPECIFIED_ADDRESS                           PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -336,14 +312,6 @@ INT ip_addr_cmp1 = 0, ip_addr_cmp2 = 0;
 /*                                                                        */
 /*    NetX Source Code                                                    */
 /*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
-/*                                                                        */
 /**************************************************************************/
 INT CHECK_UNSPECIFIED_ADDRESS(ULONG *ip_addr)
 {
@@ -361,7 +329,7 @@ INT CHECK_UNSPECIFIED_ADDRESS(ULONG *ip_addr)
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    SET_UNSPECIFIED_ADDRESS                             PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -387,14 +355,6 @@ INT CHECK_UNSPECIFIED_ADDRESS(ULONG *ip_addr)
 /*                                                                        */
 /*    NetX Source Code                                                    */
 /*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
-/*                                                                        */
 /**************************************************************************/
 void SET_UNSPECIFIED_ADDRESS(ULONG *ip_addr)
 {
@@ -413,7 +373,7 @@ void SET_UNSPECIFIED_ADDRESS(ULONG *ip_addr)
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    COPY_IPV6_ADDRESS                                   PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -442,14 +402,6 @@ void SET_UNSPECIFIED_ADDRESS(ULONG *ip_addr)
 /*                                                                        */
 /*    NetX Source Code                                                    */
 /*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
-/*                                                                        */
 /**************************************************************************/
 void COPY_IPV6_ADDRESS(ULONG *copy_from, ULONG *copy_to)
 {
@@ -469,7 +421,7 @@ void COPY_IPV6_ADDRESS(ULONG *copy_from, ULONG *copy_to)
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    COPY_NXD_ADDRESS                                    PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -502,14 +454,6 @@ void COPY_IPV6_ADDRESS(ULONG *copy_from, ULONG *copy_to)
 /*                                                                        */
 /*    NetX Source Code                                                    */
 /*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
-/*                                                                        */
 /**************************************************************************/
 
 void COPY_NXD_ADDRESS(NXD_ADDRESS *copy_from, NXD_ADDRESS  *copy_to)
@@ -531,7 +475,7 @@ void COPY_NXD_ADDRESS(NXD_ADDRESS *copy_from, NXD_ADDRESS  *copy_to)
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    SET_SOLICITED_NODE_MULTICAST_ADDRESS                PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -563,14 +507,6 @@ void COPY_NXD_ADDRESS(NXD_ADDRESS *copy_from, NXD_ADDRESS  *copy_to)
 /*                                                                        */
 /*    NetX Source Code                                                    */
 /*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
-/*                                                                        */
 /**************************************************************************/
 void SET_SOLICITED_NODE_MULTICAST_ADDRESS(ULONG *address,
                                           ULONG *unicast_address)
@@ -591,7 +527,7 @@ void SET_SOLICITED_NODE_MULTICAST_ADDRESS(ULONG *address,
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    CHECK_ALL_ROUTER_MCAST_ADDRESS                      PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -622,14 +558,6 @@ void SET_SOLICITED_NODE_MULTICAST_ADDRESS(ULONG *address,
 /*                                                                        */
 /*    NetX Source Code                                                    */
 /*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
-/*                                                                        */
 /**************************************************************************/
 INT CHECK_ALL_ROUTER_MCAST_ADDRESS(ULONG *address)
 {
@@ -656,7 +584,7 @@ INT CHECK_ALL_ROUTER_MCAST_ADDRESS(ULONG *address)
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    CHECK_IPV6_SOLICITED_NODE_MCAST_ADDRESS             PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -688,14 +616,6 @@ INT CHECK_ALL_ROUTER_MCAST_ADDRESS(ULONG *address)
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    NetX Source Code                                                    */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
 /*                                                                        */
 /**************************************************************************/
 INT CHECK_IPV6_SOLICITED_NODE_MCAST_ADDRESS(ULONG *dest_ip, ULONG *myip)
@@ -748,7 +668,7 @@ INT isMulticast = 0;
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    IPv6_Address_Type                                   PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -776,14 +696,6 @@ INT isMulticast = 0;
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    NetX Source Code                                                    */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
 /*                                                                        */
 /**************************************************************************/
 ULONG IPv6_Address_Type(ULONG *ip_address)
@@ -890,7 +802,7 @@ ULONG tmp;
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nx_ipv6_address_change_endian                      PORTABLE C      */
-/*                                                           6.1          */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Yuxin Zhou, Microsoft Corporation                                   */
@@ -917,14 +829,6 @@ ULONG tmp;
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    NetX Source Code                                                    */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  05-19-2020     Yuxin Zhou               Initial Version 6.0           */
-/*  09-30-2020     Yuxin Zhou               Modified comment(s),          */
-/*                                            resulting in version 6.1    */
 /*                                                                        */
 /**************************************************************************/
 VOID _nx_ipv6_address_change_endian(ULONG *address)

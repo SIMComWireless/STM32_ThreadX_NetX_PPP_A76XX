@@ -1,13 +1,13 @@
-/**************************************************************************/
-/*                                                                        */
-/*       Copyright (c) Microsoft Corporation. All rights reserved.        */
-/*                                                                        */
-/*       This software is licensed under the Microsoft Software License   */
-/*       Terms for Microsoft Azure RTOS. Full text of the license can be  */
-/*       found in the LICENSE file at https://aka.ms/AzureRTOS_EULA       */
-/*       and in the root directory of this software.                      */
-/*                                                                        */
-/**************************************************************************/
+/***************************************************************************
+ * Copyright (c) 2024 Microsoft Corporation
+ * Copyright (c) 2025-present Eclipse ThreadX Contributors
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the MIT License which is available at
+ * https://opensource.org/licenses/MIT.
+ *
+ * SPDX-License-Identifier: MIT
+ **************************************************************************/
 
 
 /**************************************************************************/
@@ -37,7 +37,7 @@
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nxe_http_proxy_client_enable                       PORTABLE C      */
-/*                                                           6.2.0        */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Wenhui Xie, Microsoft Corporation                                   */
@@ -68,12 +68,6 @@
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    Application Code                                                    */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  10-31-2022     Wenhui Xie               Initial Version 6.2.0         */
 /*                                                                        */
 /**************************************************************************/
 UINT _nxe_http_proxy_client_enable(NX_IP *ip_ptr, NXD_ADDRESS *proxy_server_ip, UINT proxy_server_port,
@@ -137,7 +131,7 @@ UINT        status;
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nx_http_proxy_client_enable                        PORTABLE C      */
-/*                                                           6.2.0        */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Wenhui Xie, Microsoft Corporation                                   */
@@ -169,12 +163,6 @@ UINT        status;
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    Application Code                                                    */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  10-31-2022     Wenhui Xie               Initial Version 6.2.0         */
 /*                                                                        */
 /**************************************************************************/
 UINT _nx_http_proxy_client_enable(NX_IP *ip_ptr, NXD_ADDRESS *proxy_server_ip, UINT proxy_server_port,
@@ -257,7 +245,7 @@ UCHAR string[NX_HTTP_PROXY_MAX_USERNAME + NX_HTTP_PROXY_MAX_PASSWORD + 2];
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nx_http_proxy_client_initialize                    PORTABLE C      */
-/*                                                           6.2.0        */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Wenhui Xie, Microsoft Corporation                                   */
@@ -285,12 +273,6 @@ UCHAR string[NX_HTTP_PROXY_MAX_USERNAME + NX_HTTP_PROXY_MAX_PASSWORD + 2];
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    _nxd_tcp_client_socket_connect        Connect TCP client socket     */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  10-31-2022     Wenhui Xie               Initial Version 6.2.0         */
 /*                                                                        */
 /**************************************************************************/
 VOID _nx_http_proxy_client_initialize(NX_TCP_SOCKET *socket_ptr, NXD_ADDRESS **server_ip, UINT *server_port)
@@ -336,7 +318,7 @@ NX_IP *ip_ptr = socket_ptr -> nx_tcp_socket_ip_ptr;
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nx_http_proxy_client_connect                       PORTABLE C      */
-/*                                                           6.2.0        */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Wenhui Xie, Microsoft Corporation                                   */
@@ -367,12 +349,6 @@ NX_IP *ip_ptr = socket_ptr -> nx_tcp_socket_ip_ptr;
 /*                                                                        */
 /*    _nx_tcp_socket_state_syn_received     Process SYN RECEIVED state    */
 /*    _nx_tcp_socket_state_syn_sent         Process SYN SENT state        */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  10-31-2022     Wenhui Xie               Initial Version 6.2.0         */
 /*                                                                        */
 /**************************************************************************/
 UINT _nx_http_proxy_client_connect(NX_TCP_SOCKET *socket_ptr)
@@ -524,7 +500,7 @@ UINT port = socket_ptr -> nx_tcp_socket_original_server_port;
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nx_http_proxy_client_connect_response_process      PORTABLE C      */
-/*                                                           6.2.0        */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Wenhui Xie, Microsoft Corporation                                   */
@@ -553,12 +529,6 @@ UINT port = socket_ptr -> nx_tcp_socket_original_server_port;
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    _nx_tcp_socket_packet_process         Process socket packet         */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  10-31-2022     Wenhui Xie               Initial Version 6.2.0         */
 /*                                                                        */
 /**************************************************************************/
 UINT _nx_http_proxy_client_connect_response_process(NX_TCP_SOCKET *socket_ptr)
@@ -753,7 +723,7 @@ NX_PACKET_POOL *pool_ptr = ip_ptr -> nx_ip_default_packet_pool;
 /*  FUNCTION                                               RELEASE        */
 /*                                                                        */
 /*    _nx_http_proxy_client_cleanup                       PORTABLE C      */
-/*                                                           6.2.0        */
+/*                                                           6.4.3        */
 /*  AUTHOR                                                                */
 /*                                                                        */
 /*    Wenhui Xie, Microsoft Corporation                                   */
@@ -779,12 +749,6 @@ NX_PACKET_POOL *pool_ptr = ip_ptr -> nx_ip_default_packet_pool;
 /*  CALLED BY                                                             */
 /*                                                                        */
 /*    _nx_tcp_socket_block_cleanup          Clean up the socket block     */
-/*                                                                        */
-/*  RELEASE HISTORY                                                       */
-/*                                                                        */
-/*    DATE              NAME                      DESCRIPTION             */
-/*                                                                        */
-/*  10-31-2022     Wenhui Xie               Initial Version 6.2.0         */
 /*                                                                        */
 /**************************************************************************/
 VOID _nx_http_proxy_client_cleanup(NX_TCP_SOCKET *socket_ptr)
