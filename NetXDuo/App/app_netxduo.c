@@ -105,7 +105,8 @@ static TX_THREAD ntp_thread;
 static uint8_t ppp_created = 0;
 
 /* PPP serial I/O buffer */
-static uint8_t ppp_rx_byte;
+#define PPP_RX_BATCH_SIZE   256
+static uint8_t ppp_rx_buf[PPP_RX_BATCH_SIZE];
 
 /* Serial port for PPP data (set by app_netxduo_set_serial) */
 static bsp_serial_t *ppp_serial = NULL;
@@ -199,7 +200,8 @@ static void nx_driver_stm32_ppp(NX_IP_DRIVER *driver_req_ptr)
 
 /**
   * @brief  PPP serial read thread
-  * @note   Reads bytes from UART3 and feeds them to NetX PPP via nx_ppp_byte_receive()
+  * @note   Reads bytes in batches from UART3 and feeds them to NetX PPP
+  *         via nx_ppp_byte_receive() one byte at a time.
   */
 static void ppp_read_thread_entry(ULONG param)
 {
@@ -209,12 +211,11 @@ static void ppp_read_thread_entry(ULONG param)
 
     while (1)
     {
-        /* Read one byte at a time — PPP framing is byte-oriented */
-        uint16_t n = ppp_serial->read(&ppp_rx_byte, 1, TX_WAIT_FOREVER);
-        if (n > 0)
+        /* Block until at least one byte is available, then read up to PPP_RX_BATCH_SIZE */
+        uint16_t n = ppp_serial->read(ppp_rx_buf, PPP_RX_BATCH_SIZE, TX_WAIT_FOREVER);
+        for (uint16_t i = 0; i < n; i++)
         {
-            /* Feed byte to NetX PPP state machine */
-            nx_ppp_byte_receive(&ppp_0, ppp_rx_byte);
+            nx_ppp_byte_receive(&ppp_0, ppp_rx_buf[i]);
         }
     }
 }
