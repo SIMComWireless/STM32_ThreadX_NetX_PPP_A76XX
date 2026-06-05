@@ -67,8 +67,9 @@ void a7683e_power_off(void);
 UINT a7683e_init(void);
 
 /**
- * @brief  Start PPP dial — sends ATD*99***1# and waits for CONNECT
- * @note   After CONNECT, the serial port switches to raw PPP frame passthrough
+ * @brief  Activate PDP context and start PPP dial
+ * @note   Checks EPS registration, activates PDP context, then dials ATD*99#.
+ *         After CONNECT, the serial port switches to raw PPP frame passthrough.
  * @return A7683E_OK on success
  */
 UINT a7683e_ppp_dial(void);

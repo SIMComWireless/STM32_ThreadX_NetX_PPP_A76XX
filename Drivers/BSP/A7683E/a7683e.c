@@ -272,10 +272,55 @@ UINT a7683e_ppp_dial(void)
 
     LOG_I(TAG, "Starting PPP dial...");
 
-    flush_rx();
-    modem_serial->write((const uint8_t *)"ATD*99#\r\n", strlen("ATD*99#\r\n"));
+    /* ---- Check EPS network registration (LTE) ---- */
+    status = a7683e_send_at("AT+CEREG?\r", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+    if (status == A7683E_OK)
+    {
+        int n = 0, stat = 0;
+        char *p = strstr(resp_buf, "+CEREG:");
+        if (p && sscanf(p, "+CEREG: %d,%d", &n, &stat) == 2)
+        {
+            LOG_I(TAG, "EPS registration: %s",
+                  (stat == 1) ? "home" : (stat == 5) ? "roaming" : (stat == 8) ? "SMS only" : "not registered");
+        }
+    }
 
-    status = wait_for_response("CONNECT 115200", resp_buf, sizeof(resp_buf), 30000);
+    /* ---- Check PDP context activation status ---- */
+    status = a7683e_send_at("AT+CGACT?\r", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+    if (status == A7683E_OK)
+    {
+        LOG_I(TAG, "PDP context status: %s", resp_buf);
+        /* Check if context 1 is already active (+CGACT: 1,1) */
+        if (strstr(resp_buf, "+CGACT: 1,1") == NULL)
+        {
+            /* PDP context not active — activate it explicitly */
+            LOG_I(TAG, "Activating PDP context 1...");
+            status = a7683e_send_at("AT+CGACT=1,1\r", resp_buf, sizeof(resp_buf), 15000);
+            if (status != A7683E_OK)
+            {
+                LOG_E(TAG, "PDP context activation failed!");
+                return A7683E_PPP_FAIL;
+            }
+            LOG_I(TAG, "PDP context 1 activated");
+        }
+        else
+        {
+            LOG_I(TAG, "PDP context 1 already active");
+        }
+    }
+
+    /* ---- Verify PDP address (IP assigned by network) ---- */
+    status = a7683e_send_at("AT+CGPADDR=1\r", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+    if (status == A7683E_OK)
+    {
+        LOG_I(TAG, "PDP address: %s", resp_buf);
+    }
+
+    /* ---- PPP dial ---- */
+    flush_rx();
+    modem_serial->write((const uint8_t *)"ATD*99***1#\r", 13);
+
+    status = wait_for_response("CONNECT", resp_buf, sizeof(resp_buf), 30000);
 
     if (status == A7683E_OK)
     {

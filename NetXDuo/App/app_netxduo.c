@@ -56,18 +56,18 @@
 
 /** PPP serial read thread priority */
 #define PPP_READ_THREAD_PRIO    14
-#define PPP_READ_THREAD_STACK   1024*2
+#define PPP_READ_THREAD_STACK   1024
 
 /** NTP sync thread priority */
 #define NTP_THREAD_PRIO         16
-#define NTP_THREAD_STACK        1024
+#define NTP_THREAD_STACK        1024*2
 
 /** Packet pool configuration */
-#define PACKET_POOL_SIZE        4096
+#define PACKET_POOL_SIZE        4096*2
 #define PACKET_PAYLOAD_SIZE     1536    /* Slightly larger than PPP MTU (1500) */
 
 /** PPP thread stack size */
-#define PPP_THREAD_STACK_SIZE   1024
+#define PPP_THREAD_STACK_SIZE   1024*5
 
 /** IP instance internal memory size */
 #define IP_MEMORY_SIZE          2048
@@ -239,6 +239,21 @@ static void print_ip_addresses(void)
               (ipv4_addr >> 8)  & 0xFF,  ipv4_addr & 0xFF,
               (ipv4_mask >> 24) & 0xFF, (ipv4_mask >> 16) & 0xFF,
               (ipv4_mask >> 8)  & 0xFF,  ipv4_mask & 0xFF);
+
+        ULONG gw = 0;
+        nx_ip_gateway_address_get(&ip_0, &gw);
+        LOG_I(TAG_PPP, "Gateway: %lu.%lu.%lu.%lu",
+              (gw >> 24) & 0xFF, (gw >> 16) & 0xFF,
+              (gw >> 8)  & 0xFF,  gw & 0xFF);
+
+        /* Interface status */
+        UINT if_link_up = 0;
+        nx_ip_interface_status_check(&ip_0, 0, NX_IP_LINK_ENABLED,
+                                     &if_link_up, NX_NO_WAIT);
+        LOG_I(TAG_PPP, "Interface: %s, ARP: %s, MTU: %lu",
+              if_link_up ? "UP" : "DOWN",
+              ip_0.nx_ip_interface[0].nx_interface_address_mapping_needed ? "yes" : "no",
+              (unsigned long)ip_0.nx_ip_interface[0].nx_interface_ip_mtu_size);
     }
     else
     {
@@ -329,16 +344,16 @@ static void ntp_thread_entry(ULONG param)
         static const ULONG fallback_dns[] = {
             IP_ADDRESS(114, 114, 114, 114),  /* China Telecom public DNS */
             IP_ADDRESS(223,   5,   5,   5),  /* AliDNS */
-            IP_ADDRESS(8,     8,   8,   8),  /* Google DNS */
         };
 
         /* Try PPP-negotiated DNS first */
         ULONG dns_server_addr = 0;
+        ULONG dns_secondary_addr = 0;
         UINT dns_count = 0;
         status = nx_ppp_dns_address_get(&ppp_0, &dns_server_addr);
         if (status == NX_SUCCESS && dns_server_addr != 0)
         {
-            LOG_I(TAG_DNS, "PPP DNS: %lu.%lu.%lu.%lu",
+            LOG_I(TAG_DNS, "PPP Primary DNS: %lu.%lu.%lu.%lu",
                   (dns_server_addr >> 24) & 0xFF,
                   (dns_server_addr >> 16) & 0xFF,
                   (dns_server_addr >> 8) & 0xFF,
@@ -348,7 +363,23 @@ static void ntp_thread_entry(ULONG param)
         }
         else
         {
-            LOG_W(TAG_DNS, "No DNS from PPP negotiation");
+            LOG_W(TAG_DNS, "No primary DNS from PPP");
+        }
+
+        status = nx_ppp_secondary_dns_address_get(&ppp_0, &dns_secondary_addr);
+        if (status == NX_SUCCESS && dns_secondary_addr != 0)
+        {
+            LOG_I(TAG_DNS, "PPP Secondary DNS: %lu.%lu.%lu.%lu",
+                  (dns_secondary_addr >> 24) & 0xFF,
+                  (dns_secondary_addr >> 16) & 0xFF,
+                  (dns_secondary_addr >> 8) & 0xFF,
+                  dns_secondary_addr & 0xFF);
+            nx_dns_server_add(&dns_client, dns_secondary_addr);
+            dns_count++;
+        }
+        else
+        {
+            LOG_W(TAG_DNS, "No secondary DNS from PPP");
         }
 
         /* Add fallback DNS servers */
@@ -372,12 +403,49 @@ static void ntp_thread_entry(ULONG param)
             continue;
         }
 
-        /* ---- Step 3: Resolve NTP server hostname ---- */
+        /* ---- Step 3: Ping DNS servers to verify connectivity ---- */
+        LOG_I(TAG_DNS, "Pinging DNS servers...");
+
+        /* Build combined list: PPP DNS first, then fallbacks */
+        ULONG all_dns[5];
+        UINT  all_dns_count = 0;
+        if (dns_server_addr != 0)
+            all_dns[all_dns_count++] = dns_server_addr;
+        if (dns_secondary_addr != 0)
+            all_dns[all_dns_count++] = dns_secondary_addr;
+        for (UINT i = 0; i < sizeof(fallback_dns) / sizeof(fallback_dns[0]); i++)
+            all_dns[all_dns_count++] = fallback_dns[i];
+
+        for (UINT i = 0; i < all_dns_count; i++)
+        {
+            NX_PACKET *response_ptr = NX_NULL;
+            UINT ping_status = nx_icmp_ping(&ip_0, all_dns[i],
+                                            "ping", 4,
+                                            &response_ptr,
+                                            2 * NX_IP_PERIODIC_RATE);
+            if (ping_status == NX_SUCCESS)
+            {
+                LOG_I(TAG_DNS, "  %lu.%lu.%lu.%lu: PONG (RTT OK)",
+                      (all_dns[i] >> 24) & 0xFF, (all_dns[i] >> 16) & 0xFF,
+                      (all_dns[i] >> 8) & 0xFF,  all_dns[i] & 0xFF);
+                if (response_ptr)
+                    nx_packet_release(response_ptr);
+            }
+            else
+            {
+                LOG_W(TAG_DNS, "  %lu.%lu.%lu.%lu: no reply (0x%02X)",
+                      (all_dns[i] >> 24) & 0xFF, (all_dns[i] >> 16) & 0xFF,
+                      (all_dns[i] >> 8) & 0xFF,  all_dns[i] & 0xFF,
+                      ping_status);
+            }
+        }
+
+        /* ---- Step 4: Resolve NTP server hostname ---- */
         LOG_I(TAG_DNS, "Resolving %s ...", NTP_SERVER_HOST);
         status = nx_dns_host_by_name_get(&dns_client,
                                           (UCHAR *)NTP_SERVER_HOST,
                                           &ntp_ip_address,
-                                          10 * NX_IP_PERIODIC_RATE);
+                                          3 * NX_IP_PERIODIC_RATE);
         if (status != NX_SUCCESS)
         {
             LOG_E(TAG_DNS, "DNS resolution failed: 0x%02X", status);
@@ -392,7 +460,7 @@ static void ntp_thread_entry(ULONG param)
               (ntp_ip_address >> 8) & 0xFF,
               ntp_ip_address & 0xFF);
 
-        /* ---- Step 4: Create SNTP client ---- */
+        /* ---- Step 5: Create SNTP client ---- */
         status = nx_sntp_client_create(&sntp_client, &ip_0, 0, &pool_0,
                                         NX_NULL, NX_NULL, NX_NULL);
         if (status != NX_SUCCESS)
@@ -422,7 +490,7 @@ static void ntp_thread_entry(ULONG param)
             continue;
         }
 
-        /* ---- Step 5: Request time from NTP server ---- */
+        /* ---- Step 6: Request time from NTP server ---- */
         LOG_I(TAG_NTP, "Requesting time from %s ...", NTP_SERVER_HOST);
         status = nx_sntp_client_request_unicast_time(&sntp_client,
                                                       10 * NX_IP_PERIODIC_RATE);
@@ -438,7 +506,7 @@ static void ntp_thread_entry(ULONG param)
                 LOG_I(TAG_NTP, "NTP time received!");
                 LOG_I(TAG_NTP, "Unix timestamp: %lu", (unsigned long)unix_time);
 
-                /* ---- Step 6: Set RTC ---- */
+                /* ---- Step 7: Set RTC ---- */
                 /* Calculate human-readable time */
                 uint32_t s = unix_time % 60;
                 uint32_t m = (unix_time / 60) % 60;
@@ -506,6 +574,9 @@ UINT MX_NetXDuo_Init(VOID *memory_ptr)
 {
     UINT status;
     TX_BYTE_POOL *byte_pool = (TX_BYTE_POOL *)memory_ptr;
+
+    /* Initialize NetX system internals — MUST be called before any nx_* API */
+    nx_system_initialize();
 
     /* USER CODE BEGIN MX_NetXDuo_MEM_POOL */
     /* USER CODE END MX_NetXDuo_MEM_POOL */
@@ -619,7 +690,7 @@ UINT app_netxduo_create_ppp(void)
     LOG_I(TAG, "Creating IP instance...");
 
     status = nx_ip_create(&ip_0, "NetX IP Instance", IP_ADDRESS(0, 0, 0, 0),
-                           IP_ADDRESS(255, 255, 255, 0), &pool_0,
+                           IP_ADDRESS(0, 0, 0, 0), &pool_0,
                            nx_ppp_driver,
                            ip_memory_ptr, IP_MEMORY_SIZE, 1);
     if (status != NX_SUCCESS)
@@ -627,6 +698,9 @@ UINT app_netxduo_create_ppp(void)
         LOG_E(TAG, "IP create failed: 0x%02X", status);
         return status;
     }
+
+    /* Allow ip fragmentation */
+    status = nx_ip_fragment_enable(&ip_0);
 
     /* Enable ARP (required by NetX even for PPP) */
     status = nx_arp_enable(&ip_0, arp_cache_ptr, ARP_CACHE_SIZE);

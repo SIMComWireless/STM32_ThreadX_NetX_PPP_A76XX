@@ -299,6 +299,8 @@
 #endif
 */
 
+#define NX_IP_PERIODIC_RATE                     1000
+
 /* Defined, NX_ENABLE_IP_RAW_PACKET_FILTER allows an application to install a
    filter for incoming raw packets. This feature is disabled by default. */
 /*
