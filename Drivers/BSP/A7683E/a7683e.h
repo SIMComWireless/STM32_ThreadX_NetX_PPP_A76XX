@@ -23,6 +23,11 @@ extern "C" {
 #define A7683E_APN              "cmnet"
 #endif
 
+/** PDP context type: "IP", "IPV6", or "IPV4V6" */
+#ifndef A7683E_PDP_TYPE
+#define A7683E_PDP_TYPE         "IP"
+#endif
+
 /** AT command response buffer size */
 #define A7683E_RESP_BUF_SIZE    512
 

@@ -212,7 +212,7 @@ UINT a7683e_init(void)
 
     /* Step 5: Set APN */
     LOG_I(TAG, "[5/7] Setting APN: %s", A7683E_APN);
-    snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"IP\",\"%s\"\r", A7683E_APN);
+    snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"%s\",\"%s\"\r", A7683E_PDP_TYPE, A7683E_APN);
     status = a7683e_send_at(cmd, resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
     if (status != A7683E_OK)
     {

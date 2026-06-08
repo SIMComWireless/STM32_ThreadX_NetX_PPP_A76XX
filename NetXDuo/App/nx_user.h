@@ -1839,6 +1839,12 @@
 /* Enable PPP debug log printf to stdio */
 #define NX_PPP_DEBUG_LOG_PRINT_ENABLE
 
+/* PPP debug log size and frame dump size */
+#if defined(NX_PPP_DEBUG_LOG_ENABLE) && defined(NX_PPP_DEBUG_LOG_PRINT_ENABLE)
+#define NX_PPP_DEBUG_LOG_SIZE       128
+#define NX_PPP_DEBUG_FRAME_SIZE     128
+#endif /* NX_PPP_DEBUG_LOG_ENABLE && NX_PPP_DEBUG_LOG_PRINT_ENABLE */
+
 #define NX_PPP_BASE_TIMEOUT                                 (NX_IP_PERIODIC_RATE * 2)        /* 1 second  */
 
 /* If defined, internal PPP CHAP logic is removed, including the MD5 digest logic.*/
