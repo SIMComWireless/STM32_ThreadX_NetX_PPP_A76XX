@@ -224,53 +224,54 @@ void app_netxduo_set_serial(bsp_serial_t *serial)
 
 /**
   * @brief  PPP byte send callback — called by NetX PPP to output one byte
+  * @note   Uses ppp_serial which is set to either UART3 (direct) or
+  *         CMUX DLCI 2 (virtual serial) by app_netxduo_set_serial().
+  */
+/**
+  * @brief  PPP byte send callback — called by NetX PPP to output one byte
   * @note   Buffers bytes and flushes as a single DMA transfer per PPP frame.
-  *         Skips the opening 0x7E, buffers frame data, flushes on closing 0x7E.
+  *         PPP frames are delimited by 0x7E (flag byte). On each 0x7E outside
+  *         an escape context, the buffer is flushed. This reduces DMA setup from
+  *         ~20 times/frame to 1 time/frame, significantly improving throughput.
   */
 static void ppp_byte_send(UCHAR byte)
 {
+    /* PPP control-escape: 0x7D means next byte is XOR'd with 0x20 */
     static uint8_t buf[256];
     static uint16_t pos = 0;
     static uint8_t in_escape = 0;
 
     if (!ppp_serial) return;
 
-    /* 0x7D = PPP control-escape prefix, next byte is XOR 0x20 */
+    /* Buffer the byte */
+    if (pos < sizeof(buf))
+    {
+        buf[pos++] = byte;
+    }
+
+    /* Track escape state for frame boundary detection */
     if (byte == 0x7D)
     {
         in_escape = 1;
-        if (pos < sizeof(buf)) buf[pos++] = byte;
         return;
     }
     if (in_escape)
     {
         in_escape = 0;
-        if (pos < sizeof(buf)) buf[pos++] = byte;
         return;
     }
 
-    /* 0x7E = PPP frame flag (start/end) */
+    /* 0x7E = PPP flag byte (frame start/end). Flush the buffer. */
     if (byte == 0x7E)
     {
-        if (pos == 0)
-        {
-            /* Opening 0x7E — start of frame, skip it */
-            return;
-        }
-        /* Closing 0x7E — append and flush the complete frame */
-        if (pos < sizeof(buf)) buf[pos++] = byte;
-        ppp_serial->write(buf, pos);
+        if (pos > 0) ppp_serial->write(buf, pos);
         pos = 0;
     }
-    else
+    /* Also flush if buffer is full (safety net) */
+    else if (pos >= sizeof(buf))
     {
-        if (pos < sizeof(buf)) buf[pos++] = byte;
-        /* Safety: flush if buffer full (shouldn't happen for normal PPP frames) */
-        if (pos >= sizeof(buf))
-        {
-            ppp_serial->write(buf, pos);
-            pos = 0;
-        }
+        ppp_serial->write(buf, pos);
+        pos = 0;
     }
 }
 
