@@ -29,6 +29,8 @@
 #include "bsp_uart3.h"
 #include "a7683e.h"
 #include "app_netxduo.h"
+#include "cmux.h"
+#include "cmux_serial.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -52,7 +54,7 @@
 
 /* Modem init thread — runs AT init sequence then PPP dial */
 #define MODEM_THREAD_PRIO       12
-#define MODEM_THREAD_STACK_SIZE 1024
+#define MODEM_THREAD_STACK_SIZE 1024*2
 
 /* USER CODE END PD */
 
@@ -166,9 +168,25 @@ void tx_app_thread_entry(ULONG thread_input)
 
 /* USER CODE BEGIN 1 */
 
+/** Fatal error handler — blink red LED and halt */
+static void modem_fatal(void)
+{
+  while (1)
+  {
+    HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
+    tx_thread_sleep(200);
+  }
+}
+
 /**
   * @brief  Modem initialization and PPP dial thread
   * @note   Runs at priority 12 (higher than app thread)
+  *
+  * Flow:
+  *   1. Power on modem, init (direct UART)
+  *   2. [CMUX] Start CMUX → pre_dial → dial → switch PPP to CMUX virtual serial
+  *   3. [Direct] pre_dial → dial → PPP uses UART3 directly
+  *   4. Create PPP instance, start PPP negotiation
   */
 static void modem_thread_entry(ULONG param)
 {
@@ -180,57 +198,84 @@ static void modem_thread_entry(ULONG param)
   /* Step 1: Power on modem */
   //a7683e_power_on();
 
-  /* Step 2: Initialize modem (AT, SIM check, APN set) */
+  /* Step 2: Init — always via direct UART (CMUX not active yet) */
   status = a7683e_init();
   if (status != A7683E_OK)
   {
     LOG_E(TAG, "Modem init failed: 0x%02X", status);
-    LOG_E(TAG, "Check SIM card and antenna connection");
-
-    /* Blink red LED rapidly on error */
-    while (1)
-    {
-      HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-      tx_thread_sleep(200);
-    }
+    modem_fatal();
   }
 
-  /* Step 3: Start PPP dial — modem enters data mode */
+#if CMUX_ENABLE
+  /* Step 3: Try CMUX mode */
+  status = a7683e_cmux_start();
+  if (status == A7683E_OK)
+  {
+    /* Pre-dial queries via CMUX DLCI 2 */
+    status = a7683e_pre_dial(a7683e_cmux_send_at_dlci2);
+    if (status != A7683E_OK)
+    {
+      LOG_E(TAG, "Pre-dial failed via CMUX: 0x%02X", status);
+      goto cmux_fail;
+    }
+
+    /* PPP dial via CMUX DLCI 2 — ATD must be on same DLCI as PPP data */
+    char cmux_resp[32];
+    status = a7683e_cmux_send_at_dlci(2, "ATD*99***1#", cmux_resp, sizeof(cmux_resp), 30000);
+    if (status == A7683E_OK && strstr(cmux_resp, "CONNECT") != NULL)
+    {
+      LOG_I(TAG, "PPP CONNECT via CMUX — DLCI 2 is now PPP data channel");
+      /* Initialize CMUX virtual serial ports and switch PPP to DLCI 2 */
+      cmux_serial_init_all();
+      app_netxduo_set_serial(cmux_serial_get(CMUX_PPP_DLCI));
+      goto ppp_create;
+    }
+
+    LOG_E(TAG, "PPP dial via CMUX failed");
+cmux_fail:
+    cmux_stop(&g_cmux);
+    cmux_bridge_stop();
+    a7683e_sync();
+    LOG_I(TAG, "Falling back to direct UART mode");
+  }
+  else
+  {
+    LOG_E(TAG, "CMUX start failed: 0x%02X — using direct mode", status);
+  }
+#endif /* CMUX_ENABLE */
+
+  /* Direct UART mode: pre-dial + PPP dial */
+  status = a7683e_pre_dial(a7683e_send_at);
+  if (status != A7683E_OK)
+  {
+    LOG_E(TAG, "Pre-dial failed: 0x%02X", status);
+    modem_fatal();
+  }
+
   status = a7683e_ppp_dial();
   if (status != A7683E_OK)
   {
     LOG_E(TAG, "PPP dial failed: 0x%02X", status);
-
-    while (1)
-    {
-      HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-      tx_thread_sleep(200);
-    }
+    modem_fatal();
   }
+  LOG_I(TAG, "Modem in PPP data mode (direct UART)");
 
-  LOG_I(TAG, "Modem in PPP data mode — NetX PPP is now handling the link");
-
+ppp_create:
   /* Step 4: Create PPP instance (must be in thread context) */
+
   status = app_netxduo_create_ppp();
   if (status != NX_SUCCESS)
   {
     LOG_E(TAG, "PPP create failed: 0x%02X", status);
-    while (1)
-    {
-      HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-      tx_thread_sleep(200);
-    }
+    modem_fatal();
   }
 
   /* Step 5: Start PPP negotiation */
   status = app_netxduo_start_ppp();
   if (status != NX_SUCCESS)
   {
-    while (1)
-    {
-      HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-      tx_thread_sleep(200);
-    }
+    LOG_E(TAG, "PPP start failed: 0x%02X", status);
+    modem_fatal();
   }
 
   /* Thread exits — PPP read thread and NTP thread handle the rest */

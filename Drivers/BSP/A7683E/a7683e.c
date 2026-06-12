@@ -4,18 +4,30 @@
   * @brief   SIMCom A7683E modem driver — AT command layer + PPP dial
   ******************************************************************************
   * @note
-  *   Initialization sequence:
-  *   1. Power on modem via PWR_EN toggle
-  *   2. Wait for modem ready, send AT, verify OK
-  *   3. Disable echo (ATE0)
-  *   4. Check SIM status (AT+CPIN?)
-  *   5. Check signal quality (AT+CSQ)
-  *   6. Set APN (AT+CGDCONT)
-  *   7. PPP dial (ATD*99***1#) → CONNECT
+  *   Initialization sequence (a7683e_init):
+  *   0. Escape PPP mode (+++ guard time sequence)
+  *   1. Sync with modem (send AT up to 5 times)
+  *   2. Disable echo (ATE0)
+  *   3. Check SIM status (AT+CPIN?)
+  *   4. Check signal quality (AT+CSQ)
+  *   5. Set APN (AT+CGDCONT)
+  *   6. Wait for network registration (AT+CGREG?)
+  *
+  *   Pre-dial (a7683e_pre_dial):
+  *   - Check EPS registration (AT+CEREG?)
+  *   - Activate PDP context (AT+CGACT)
+  *   - Verify PDP address (AT+CGPADDR)
+  *
+  *   Dial (a7683e_ppp_dial):
+  *   - PPP dial (ATD*99***1#) → CONNECT
+  *
+  *   All AT send functions auto-append \r if not present.
+  *   pre_dial / ppp_dial accept a function pointer for CMUX/direct transport.
   ******************************************************************************
   */
 
 #include "a7683e.h"
+#include "cmux.h"
 #include "elog.h"
 #include "main.h"
 #include <string.h>
@@ -41,22 +53,62 @@ static void flush_rx(void)
     }
 }
 
+/** Overflow buffer: stores bytes read past the keyword line (e.g. PPP frames
+ *  that arrive immediately after "CONNECT\r\n"). The PPP read thread drains
+ *  this before reading from the serial port. */
+static uint8_t  overflow_buf[512];
+static uint16_t overflow_len;
+
+/**
+ * @brief  Drain overflow buffer — called by PPP read thread before serial read.
+ */
+uint16_t a7683e_drain_overflow(uint8_t *dst, uint16_t max_len)
+{
+    if (overflow_len == 0) return 0;
+    uint16_t n = (overflow_len > max_len) ? max_len : overflow_len;
+    memcpy(dst, overflow_buf, n);
+    /* Shift remaining bytes */
+    memmove(overflow_buf, overflow_buf + n, overflow_len - n);
+    overflow_len -= n;
+    return n;
+}
+
 static UINT wait_for_response(const char *keyword, char *buf, uint16_t buf_size, uint32_t timeout_ms)
 {
     uint16_t pos = 0;
     uint32_t deadline = tx_time_get() + (timeout_ms * TX_TIMER_TICKS_PER_SECOND / 1000);
 
     memset(buf, 0, buf_size);
+    overflow_len = 0;
 
     while (tx_time_get() < deadline)
     {
         /* Read available bytes (up to remaining buffer space) */
         uint16_t n = modem_serial->read((uint8_t *)buf + pos, buf_size - 1 - pos, 50);
+        if (n == 0) continue;
         pos += n;
         buf[pos] = '\0';
 
         /* Check for success */
-        if (strstr(buf, keyword))     return A7683E_OK;
+        char *kw = strstr(buf, keyword);
+        if (kw)
+        {
+            /* Found keyword. We may have read past the response line.
+             * Save excess bytes (data after the keyword line's \n) to overflow
+             * buffer so the PPP read thread can consume them. */
+            char *after_kw = kw + strlen(keyword);
+            char *line_end = strchr(after_kw, '\n');
+            if (line_end)
+            {
+                uint16_t excess = (uint16_t)(buf + pos - line_end - 1);
+                if (excess > 0 && excess < sizeof(overflow_buf))
+                {
+                    memcpy(overflow_buf, line_end + 1, excess);
+                    overflow_len = excess;
+                }
+            }
+            return A7683E_OK;
+        }
 
         /* Check for error */
         if (strstr(buf, "ERROR"))
@@ -75,6 +127,125 @@ static UINT wait_for_response(const char *keyword, char *buf, uint16_t buf_size,
 void a7683e_set_serial(bsp_serial_t *serial)
 {
     modem_serial = serial;
+}
+
+/**
+ * @brief  Escape from CMUX mode if modem is still in CMUX after MCU reset.
+ *         Detects CMUX by checking if RX data starts with 0xF9 (CMUX flag byte).
+ *         Sends DISC (P/F=1) on DLCI 0/1/2 to request CMUX teardown,
+ *         then waits for modem to auto-revert to AT command mode.
+ * @return A7683E_OK if CMUX was detected and DISC sent,
+ *         A7683E_TIMEOUT if not in CMUX mode (normal).
+ */
+UINT a7683e_escape_cmux(void)
+{
+    if (!modem_serial) return A7683E_ERROR;
+
+    /* Drain stale RX data and check first byte */
+    flush_rx();
+
+    LOG_I(TAG, "Sending DISC to close all DLCIs...");
+
+    /* Send DISC (P/F=1) on DLCI 0, 1, 2 to request teardown.
+     * Frame format: 7E | Addr | 0x53(DISCPF) | 0x01 | FCS | 7E
+     * Address: EA=1 | C/R=1 | DLCI
+     * FCS precomputed: CRC-8 over [Addr, 0x53, 0x01] */
+    static const uint8_t disc_frames[][6] = {
+        /* DLCI 0: addr=0x03, FCS=0xFD */
+        { 0xF9, 0x03, 0x53, 0x01, 0xFD, 0xF9 },
+        /* DLCI 1: addr=0x07, FCS=0x3F */
+        { 0xF9, 0x07, 0x53, 0x01, 0x3F, 0xF9 },
+        /* DLCI 2: addr=0x0B, FCS=0xB8 */
+        { 0xF9, 0x0B, 0x53, 0x01, 0xB8, 0xF9 },
+    };
+    for (uint8_t i = 0; i < 3; i++)
+    {
+        modem_serial->write(disc_frames[i], 6);
+        LOG_D(TAG, "DISC sent on DLCI %u", i);
+    }
+
+    /* Modem sends UA responses, then auto-reverts to AT mode.
+     * SIMCom timeout is ~3s for SABM retries. */
+    LOG_I(TAG, "Waiting for modem to exit CMUX mode...");
+    flush_rx();
+    tx_thread_sleep(100);
+
+    /* Verify we're back in AT mode */
+    flush_rx();
+    modem_serial->write((const uint8_t *)"AT\r", 3);
+    char buf[64] = {0};
+    uint16_t n = modem_serial->read((uint8_t *)buf, sizeof(buf) - 1, 1000);
+    if (n > 0 && strstr(buf, "OK"))
+    {
+        LOG_I(TAG, "Modem back in AT mode");
+        return A7683E_OK;
+    }
+
+    LOG_W(TAG, "Modem may still be transitioning, continuing...");
+    return A7683E_TIMEOUT;
+}
+
+/**
+ * @brief  Escape from PPP data mode.
+ *         Sends +++ (no CR/LF) and waits up to 1s for "OK".
+ *         If modem responds, it was in PPP mode — hangs up with ATH.
+ * @return A7683E_OK if modem was in PPP mode and escaped,
+ *         A7683E_TIMEOUT if modem was not in PPP mode (normal),
+ *         A7683E_ERROR on failure.
+ */
+UINT a7683e_escape_ppp(void)
+{
+    if (!modem_serial) return A7683E_ERROR;
+
+    LOG_I(TAG, "Escaping PPP mode (+++)...");
+
+    /* +++ escape sequence per ITU-T V.250:
+     * 1s silence → +++ → 1s silence → then commands */
+    flush_rx();
+    tx_thread_sleep(100);  /* Pre-guard: 1s silence before +++ (V.250) */
+    modem_serial->write((const uint8_t *)"+++", 3);
+
+    char esc_buf[64] = {0};
+    uint16_t got = modem_serial->read((uint8_t *)esc_buf, sizeof(esc_buf) - 1, 1000);
+    if (got > 0 && strstr(esc_buf, "OK"))
+    {
+        LOG_I(TAG, "Modem was in PPP mode, hanging up...");
+        a7683e_send_at("ATH", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+        tx_thread_sleep(100);
+        return A7683E_OK;
+    }
+
+    LOG_D(TAG, "Not in PPP mode (normal)");
+    return A7683E_TIMEOUT;
+}
+
+/**
+ * @brief  Synchronize with modem by sending AT up to 5 times.
+ *         Some modems need multiple AT commands to wake up after power-on
+ *         or mode switch.
+ * @return A7683E_OK if modem responded, A7683E_ERROR otherwise.
+ */
+UINT a7683e_sync(void)
+{
+    if (!modem_serial) return A7683E_ERROR;
+
+    LOG_I(TAG, "Syncing with modem...");
+    for (int i = 0; i < 5; i++)
+    {
+        flush_rx();
+        modem_serial->write((const uint8_t *)"AT\r", 3);
+        UINT status = wait_for_response("OK", resp_buf, sizeof(resp_buf), 1000);
+        if (status == A7683E_OK)
+        {
+            LOG_I(TAG, "Modem synced (attempt %d)", i + 1);
+            return A7683E_OK;
+        }
+        LOG_D(TAG, "AT attempt %d failed, retrying...", i + 1);
+        tx_thread_sleep(200);
+    }
+
+    LOG_E(TAG, "Modem not responding after 5 AT attempts");
+    return A7683E_ERROR;
 }
 
 void a7683e_power_on(void)
@@ -112,7 +283,21 @@ UINT a7683e_send_at(const char *cmd, char *resp, uint16_t resp_len, uint32_t tim
 
     flush_rx();
 
-    modem_serial->write((const uint8_t *)cmd, strlen(cmd));
+    /* Send command — auto-append \r if not present.
+     * Use single write to keep the bytes contiguous. */
+    size_t cmd_len = strlen(cmd);
+    if (cmd_len > 0 && cmd[cmd_len - 1] == '\r')
+    {
+        modem_serial->write((const uint8_t *)cmd, cmd_len);
+    }
+    else
+    {
+        uint8_t cmd_buf[256];
+        if (cmd_len + 1 > sizeof(cmd_buf)) return A7683E_ERROR;
+        memcpy(cmd_buf, cmd, cmd_len);
+        cmd_buf[cmd_len] = '\r';
+        modem_serial->write(cmd_buf, cmd_len + 1);
+    }
 
     UINT status = wait_for_response("OK", resp, resp_len, timeout_ms);
 
@@ -128,7 +313,7 @@ UINT a7683e_check_alive(void)
 {
     for (int i = 0; i < A7683E_MAX_RETRIES; i++)
     {
-        if (a7683e_send_at("AT\r\n", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT) == A7683E_OK)
+        if (a7683e_send_at("AT", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT) == A7683E_OK)
         {
             return A7683E_OK;
         }
@@ -151,40 +336,27 @@ UINT a7683e_init(void)
     LOG_I(TAG, "=== A7683E Modem Initialization ===");
     LOG_I(TAG, "Serial port: %s", modem_serial->name);
 
-    /* Step 0: Escape from PPP data mode if previously connected.
-     * Send +++ (no CR/LF) and wait up to 1s for "OK".
-     * If modem responds, it was in PPP mode — hang up with ATH. */
-    LOG_I(TAG, "[0/7] Checking for PPP escape...");
-    modem_serial->write((const uint8_t *)"+++", 3);
-    {
-        char esc_buf[64] = {0};
-        uint16_t got = modem_serial->read((uint8_t *)esc_buf, sizeof(esc_buf) - 1, 1000);
-        if (got > 0 && strstr(esc_buf, "OK"))
-        {
-            LOG_I(TAG, "Modem was in PPP mode, hanging up...");
-            tx_thread_sleep(1000);  /* Guard time after +++ */
-            a7683e_send_at("ATH\r", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
-            tx_thread_sleep(500);
-        }
-    }
+    /* Step 0: Escape from CMUX/PPP if modem is in a stale state */
+    LOG_I(TAG, "[0/7] Checking for stale CMUX/PPP mode...");
+    a7683e_escape_cmux();  /* Ignore return — TIMEOUT means not in CMUX */
+    a7683e_escape_ppp();   /* Ignore return — TIMEOUT means not in PPP */
 
-    /* Step 1: Check modem is alive */
-    LOG_I(TAG, "[1/7] Checking modem response...");
-    status = a7683e_check_alive();
+    /* Step 1: Sync with modem (send AT up to 5 times) */
+    LOG_I(TAG, "[1/7] Syncing with modem...");
+    status = a7683e_sync();
     if (status != A7683E_OK)
     {
-        LOG_E(TAG, "Modem not responding to AT");
+        LOG_E(TAG, "Modem not responding");
         return A7683E_ERROR;
     }
-    LOG_I(TAG, "Modem is alive");
 
     /* Step 2: Disable echo */
     LOG_I(TAG, "[2/7] Disabling echo...");
-    a7683e_send_at("ATE0\r", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+    a7683e_send_at("ATE0", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
 
     /* Step 3: Check SIM status */
     LOG_I(TAG, "[3/7] Checking SIM card...");
-    status = a7683e_send_at("AT+CPIN?\r", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+    status = a7683e_send_at("AT+CPIN?", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
     if (status != A7683E_OK || strstr(resp_buf, "READY") == NULL)
     {
         LOG_E(TAG, "SIM card not ready: %s", resp_buf);
@@ -194,7 +366,7 @@ UINT a7683e_init(void)
 
     /* Step 4: Check signal quality */
     LOG_I(TAG, "[4/7] Checking signal quality...");
-    status = a7683e_send_at("AT+CSQ\r", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+    status = a7683e_send_at("AT+CSQ", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
     if (status == A7683E_OK)
     {
         int rssi = 0;
@@ -212,7 +384,7 @@ UINT a7683e_init(void)
 
     /* Step 5: Set APN */
     LOG_I(TAG, "[5/7] Setting APN: %s", A7683E_APN);
-    snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"%s\",\"%s\"\r", A7683E_PDP_TYPE, A7683E_APN);
+    snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"%s\",\"%s\"", A7683E_PDP_TYPE, A7683E_APN);
     status = a7683e_send_at(cmd, resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
     if (status != A7683E_OK)
     {
@@ -225,9 +397,9 @@ UINT a7683e_init(void)
     LOG_I(TAG, "[6/7] Waiting for network registration...");
     {
         int registered = 0;
-        for (int retry = 0; retry < 60; retry++)  /* Max 60s */
+        for (int retry = 0; retry < 120; retry++)  /* Max 120s */
         {
-            status = a7683e_send_at("AT+CGREG?\r", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+            status = a7683e_send_at("AT+CGREG?", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
             if (status == A7683E_OK)
             {
                 /* Response: +CGREG: <n>,<stat>
@@ -264,38 +436,28 @@ UINT a7683e_init(void)
     return A7683E_OK;
 }
 
-UINT a7683e_ppp_dial(void)
+/**
+ * @brief  Pre-dial queries: check EPS registration, activate PDP context,
+ *         verify PDP address. Call before a7683e_ppp_dial().
+ * @param  send_at  Function pointer for sending AT commands.
+ *                  Pass a7683e_send_at for direct UART, or a7683e_cmux_send_at for CMUX.
+ * @return A7683E_OK on success
+ */
+UINT a7683e_pre_dial(at_send_fn_t send_at)
 {
     UINT status;
+    char resp[256];
 
-    if (!modem_serial) return A7683E_ERROR;
-
-    LOG_I(TAG, "Starting PPP dial...");
-
-    /* ---- Check EPS network registration (LTE) ---- */
-    status = a7683e_send_at("AT+CEREG?\r", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
-    if (status == A7683E_OK)
-    {
-        int n = 0, stat = 0;
-        char *p = strstr(resp_buf, "+CEREG:");
-        if (p && sscanf(p, "+CEREG: %d,%d", &n, &stat) == 2)
-        {
-            LOG_I(TAG, "EPS registration: %s",
-                  (stat == 1) ? "home" : (stat == 5) ? "roaming" : (stat == 8) ? "SMS only" : "not registered");
-        }
-    }
+    LOG_I(TAG, "=== Pre-dial queries ===");
 
     /* ---- Check PDP context activation status ---- */
-    status = a7683e_send_at("AT+CGACT?\r", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+    status = send_at("AT+CGACT?", resp, sizeof(resp), A7683E_DEFAULT_TIMEOUT);
     if (status == A7683E_OK)
     {
-        LOG_I(TAG, "PDP context status: %s", resp_buf);
-        /* Check if context 1 is already active (+CGACT: 1,1) */
-        if (strstr(resp_buf, "+CGACT: 1,1") == NULL)
+        if (strstr(resp, "+CGACT: 1,1") == NULL)
         {
-            /* PDP context not active — activate it explicitly */
             LOG_I(TAG, "Activating PDP context 1...");
-            status = a7683e_send_at("AT+CGACT=1,1\r", resp_buf, sizeof(resp_buf), 15000);
+            status = send_at("AT+CGACT=1,1", resp, sizeof(resp), 15000);
             if (status != A7683E_OK)
             {
                 LOG_E(TAG, "PDP context activation failed!");
@@ -310,30 +472,223 @@ UINT a7683e_ppp_dial(void)
     }
 
     /* ---- Verify PDP address (IP assigned by network) ---- */
-    status = a7683e_send_at("AT+CGPADDR=1\r", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+    status = send_at("AT+CGPADDR=1", resp, sizeof(resp), A7683E_DEFAULT_TIMEOUT);
     if (status == A7683E_OK)
     {
-        LOG_I(TAG, "PDP address: %s", resp_buf);
+        LOG_I(TAG, "PDP address: %s", resp);
     }
 
-    /* ---- PPP dial ---- */
-    flush_rx();
-    modem_serial->write((const uint8_t *)"ATD*99***1#\r", 13);
+    return A7683E_OK;
+}
 
-    status = wait_for_response("CONNECT", resp_buf, sizeof(resp_buf), 30000);
+/**
+ * @brief  PPP dial via direct UART: send ATD*99***1# and wait for CONNECT.
+ * @note   Cannot use send_at() because send_at() waits for "OK", but PPP dial
+ *         returns "CONNECT" instead. We send raw and wait for "CONNECT" directly.
+ * @return A7683E_OK on success
+ */
+UINT a7683e_ppp_dial(void)
+{   
+    LOG_I(TAG, "=== PPP Dial ===");
+    if (!modem_serial) return A7683E_ERROR;
+
+    char resp[256];
+
+    LOG_I(TAG, "Dialing PPP (ATD*99***1#)...");
+    flush_rx();
+    modem_serial->write((const uint8_t *)"ATD*99***1#\r", 12);
+
+    UINT status = wait_for_response("CONNECT 115200\r\n", resp, sizeof(resp), 30000);
 
     if (status == A7683E_OK)
     {
         LOG_I(TAG, "PPP CONNECT received — modem is now in data mode");
         tx_thread_sleep(100);
+        flush_rx();
+        return A7683E_OK;
     }
-    else
-    {
-        LOG_E(TAG, "PPP dial failed — no CONNECT received");
-        return A7683E_PPP_FAIL;
-    }
+   
+    LOG_E(TAG, "PPP dial failed — no CONNECT received");
+    return A7683E_PPP_FAIL;
+}
 
+/* ---------- CMUX integration --------------------------------------------- */
+
+#if CMUX_ENABLE
+
+/** AT response buffer for CMUX DLCI 1 */
+static char     cmux_at_buf[512];
+static volatile uint16_t cmux_at_len;
+static volatile uint8_t cmux_at_ready;
+
+/**
+ * @brief  CMUX RX callback for DLCI 1 (AT channel).
+ *         Accumulates response data and flags when complete.
+ */
+static void cmux_at_rx(uint8_t dlci, const uint8_t *data, uint16_t len)
+{
+    (void)dlci;
+    if (cmux_at_len + len < sizeof(cmux_at_buf) - 1) {
+        memcpy(cmux_at_buf + cmux_at_len, data, len);
+        cmux_at_len += len;
+        cmux_at_buf[cmux_at_len] = '\0';
+
+        /* Check for terminal responses */
+        if (strstr(cmux_at_buf, "OK") || strstr(cmux_at_buf, "ERROR") ||
+            strstr(cmux_at_buf, "NO CARRIER") || strstr(cmux_at_buf, "+CME ERROR") ||
+            strstr(cmux_at_buf, "CONNECT"))
+            cmux_at_ready = 1;
+    }
+}
+
+/**
+ * @brief  Start CMUX mode on the modem.
+ *         1. Initialize CMUX instance
+ *         2. Send AT+CMUX=0 to enter CMUX mode
+ *         3. Establish DLCI 0 (control), 1 (AT), 2 (PPP)
+ * @return A7683E_OK on success
+ */
+UINT a7683e_cmux_start(void)
+{
+    UINT status;
+
+    if (!modem_serial) return A7683E_ERROR;
+
+    LOG_I(TAG, "=== Starting CMUX mode ===");
+
+    /* Initialize CMUX */
+    cmux_init(&g_cmux);
+
+    /* Register AT response callback on DLCI 1 */
+    cmux_set_rx_callback(&g_cmux, 1, cmux_at_rx);
+
+    /* Send AT+CMUX=0 (Basic mode) */
     flush_rx();
+    {
+        const char *at_cmd = "AT+CMUX=0\r";
+        modem_serial->write((const uint8_t *)at_cmd, strlen(at_cmd));
+    }
 
+    /* Wait for OK — after OK, modem immediately enters CMUX mode and sends
+     * SABM on DLCI 0. The SABM bytes may arrive in the same read() call
+     * that delivers "OK", so we must capture them. */
+    {
+        char cmux_resp[256] = {0};
+        uint16_t pos = 0;
+        uint32_t deadline = tx_time_get() + (3 * TX_TIMER_TICKS_PER_SECOND);
+        uint8_t ok_found = 0;
+
+        while (tx_time_get() < deadline)
+        {
+            uint16_t n = modem_serial->read((uint8_t *)cmux_resp + pos,
+                                            sizeof(cmux_resp) - 1 - pos, 50);
+            pos += n;
+            cmux_resp[pos] = '\0';
+
+            if (strstr(cmux_resp, "OK")) {
+                ok_found = 1;
+                LOG_I(TAG, "AT+CMUX=0 accepted — entering CMUX mode");
+                break;
+            }
+            if (strstr(cmux_resp, "ERROR")) {
+                LOG_E(TAG, "AT+CMUX=0 failed: %s", cmux_resp);
+                return A7683E_ERROR;
+            }
+        }
+
+        if (!ok_found) {
+            LOG_E(TAG, "AT+CMUX=0 timeout");
+            return A7683E_ERROR;
+        }
+
+        /* Install UART3 RX hook so new data goes to cmux_feed() */
+        cmux_bridge_start();
+
+        flush_rx();
+    }
+
+    /* Now the modem is in CMUX mode — all further communication is framed */
+    /* Start CMUX: SABM on DLCI 0 (if not already open), 1, 2 */
+    int ret = cmux_start(&g_cmux);
+    if (ret != 0) {
+        LOG_E(TAG, "CMUX start failed: %d", ret);
+        return A7683E_ERROR;
+    }
+
+    LOG_I(TAG, "CMUX mode active — DLCI 0(ctrl) 1(AT) 2(PPP)");
     return A7683E_OK;
 }
+
+/**
+ * @brief  Send AT command via CMUX on specified DLCI and wait for response.
+ * @param  dlci       CMUX channel (1=AT, 2=PPP)
+ * @param  cmd        AT command string (\r optional — auto-appended if missing)
+ * @param  resp       Response buffer
+ * @param  resp_len   Response buffer size
+ * @param  timeout_ms Timeout in ms
+ * @return A7683E_OK on success
+ */
+UINT a7683e_cmux_send_at_dlci(uint8_t dlci, const char *cmd, char *resp,
+                               uint16_t resp_len, uint32_t timeout_ms)
+{
+    if (!cmux_is_active(&g_cmux)) return A7683E_ERROR;
+
+    /* Build command with \r terminator (auto-append if not present) */
+    char buf[256];
+    size_t len = strlen(cmd);
+    if (len + 2 > sizeof(buf)) return A7683E_ERROR;
+    memcpy(buf, cmd, len);
+    if (len == 0 || cmd[len - 1] != '\r') {
+        buf[len++] = '\r';
+    }
+    buf[len] = '\0';
+
+    /* Register AT callback on target DLCI, then reset response buffer.
+     * Order matters: register callback first so we don't miss fast responses. */
+    cmux_set_rx_callback(&g_cmux, dlci, cmux_at_rx);
+    cmux_at_len = 0;
+    cmux_at_ready = 0;
+    cmux_at_buf[0] = '\0';
+
+    /* Send via specified CMUX DLCI */
+    cmux_send(&g_cmux, dlci, (const uint8_t *)buf, len);
+
+    LOG_D(TAG, "CMUX TX [DLCI %u]: %s", dlci, cmd);
+
+    /* Wait for response */
+    uint32_t elapsed = 0;
+    uint32_t step = 10;
+    while (!cmux_at_ready && elapsed < timeout_ms) {
+        tx_thread_sleep(step);
+        elapsed += step;
+    }
+
+    if (cmux_at_ready && resp) {
+        uint16_t copy_len = cmux_at_len;
+        if (copy_len > resp_len - 1) copy_len = resp_len - 1;
+        memcpy(resp, cmux_at_buf, copy_len);
+        resp[copy_len] = '\0';
+        LOG_D(TAG, "CMUX RX: %s", resp);
+        return A7683E_OK;
+    }
+
+    return A7683E_TIMEOUT;
+}
+
+/**
+ * @brief  Send AT command via CMUX DLCI 1 (at_send_fn_t compatible).
+ */
+UINT a7683e_cmux_send_at(const char *cmd, char *resp, uint16_t resp_len, uint32_t timeout_ms)
+{
+    return a7683e_cmux_send_at_dlci(1, cmd, resp, resp_len, timeout_ms);
+}
+
+/**
+ * @brief  Send AT command via CMUX DLCI 2 (at_send_fn_t compatible).
+ */
+UINT a7683e_cmux_send_at_dlci2(const char *cmd, char *resp, uint16_t resp_len, uint32_t timeout_ms)
+{
+    return a7683e_cmux_send_at_dlci(2, cmd, resp, resp_len, timeout_ms);
+}
+
+#endif /* CMUX_ENABLE */

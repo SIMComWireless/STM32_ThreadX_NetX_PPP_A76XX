@@ -1831,10 +1831,10 @@
 */
 
 /* Enable PPP compression (ACFC + PFC) */
-#define NX_PPP_COMPRESSION_ENABLE
+//#define NX_PPP_COMPRESSION_ENABLE
 
 /* Enable internal PPP debug log */
-#define NX_PPP_DEBUG_LOG_ENABLE
+//#define NX_PPP_DEBUG_LOG_ENABLE
 
 /* Enable PPP debug log printf to stdio */
 #define NX_PPP_DEBUG_LOG_PRINT_ENABLE

@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define>TX_INCLUDE_USER_DEFINE_FILE,NX_INCLUDE_USER_DEFINE_FILE,USE_HAL_DRIVER,STM32L4R5xx</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../AZURE_RTOS/App;../NetXDuo/App;../Drivers/STM32L4xx_HAL_Driver/Inc;../Drivers/STM32L4xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32L4xx/Include;../Drivers/CMSIS/Include;../Middlewares/ST/netxduo/addons/sntp/;../Middlewares/ST/netxduo/addons/dns/;../Middlewares/ST/netxduo/common/inc/;../Middlewares/ST/netxduo/ports/cortex_m4/ac5/inc/;../Middlewares/ST/netxduo/addons/ppp/;../Middlewares/ST/threadx/common/inc/;../Middlewares/ST/threadx/ports/cortex_m4/ac6/inc/;..\Drivers\BSP\A7683E;..\EasyLogger\inc;..\Drivers\BSP\serial</IncludePath>
+              <IncludePath>../Core/Inc;../AZURE_RTOS/App;../NetXDuo/App;../Drivers/STM32L4xx_HAL_Driver/Inc;../Drivers/STM32L4xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32L4xx/Include;../Drivers/CMSIS/Include;../Middlewares/ST/netxduo/addons/sntp/;../Middlewares/ST/netxduo/addons/dns/;../Middlewares/ST/netxduo/common/inc/;../Middlewares/ST/netxduo/ports/cortex_m4/ac5/inc/;../Middlewares/ST/netxduo/addons/ppp/;../Middlewares/ST/threadx/common/inc/;../Middlewares/ST/threadx/ports/cortex_m4/ac6/inc/;..\Drivers\BSP\A7683E;..\EasyLogger\inc;..\Drivers\BSP\serial;..\Drivers\BSP\lwrb\lwrb\src\include\lwrb</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -615,9 +615,29 @@
               <FilePath>..\Drivers\BSP\A7683E\bsp_uart3.c</FilePath>
             </File>
             <File>
-              <FileName>fault_debug.c</FileName>
+              <FileName>cmux.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\Drivers\BSP\A7683E\fault_debug.c</FilePath>
+              <FilePath>..\Drivers\BSP\A7683E\cmux.c</FilePath>
+            </File>
+            <File>
+              <FileName>cmux_port.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Drivers\BSP\A7683E\cmux_port.c</FilePath>
+            </File>
+            <File>
+              <FileName>cmux_serial.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Drivers\BSP\A7683E\cmux_serial.c</FilePath>
+            </File>
+            <File>
+              <FileName>lwrb.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Drivers\BSP\lwrb\lwrb\src\lwrb\lwrb.c</FilePath>
+            </File>
+            <File>
+              <FileName>lwrb_ex.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Drivers\BSP\lwrb\lwrb\src\lwrb\lwrb_ex.c</FilePath>
             </File>
           </Files>
         </Group>

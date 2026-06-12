@@ -1,0 +1,28 @@
+{
+    "configurations": [
+        {
+            "name": "STM32L4 A7683E_PPP",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/Drivers/BSP/A7683E",
+                "${workspaceFolder}/Drivers/BSP/lwrb/lwrb/src/include",
+                "${workspaceFolder}/EasyLogger/inc",
+                "${workspaceFolder}/Core/Inc",
+                "${workspaceFolder}/Drivers/STM32L4xx_HAL_Driver/Inc",
+                "${workspaceFolder}/Drivers/CMSIS/Include",
+                "${workspaceFolder}/Drivers/CMSIS/Device/ST/STM32L4xx/Include",
+                "${workspaceFolder}/Middlewares/ST/threadx/ports/cortex_m4/gnu/inc",
+                "${workspaceFolder}/Middlewares/ST/netxduo/common/inc"
+            ],
+            "defines": [
+                "STM32L4R5xx",
+                "USE_HAL_DRIVER"
+            ],
+            "compilerPath": "",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-arm"
+        }
+    ],
+    "version": 4
+}

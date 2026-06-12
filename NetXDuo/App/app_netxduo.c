@@ -56,6 +56,52 @@
 /** NTP epoch offset (seconds from 1900-01-01 to 1970-01-01) */
 #define NTP_EPOCH_OFFSET        2208988800UL
 
+/** Days in each month (non-leap year) */
+static const uint8_t days_in_month[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+
+/**
+ * @brief  Check if a year is a leap year
+ */
+static int is_leap_year(uint32_t year)
+{
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+/**
+ * @brief  Convert Unix timestamp to year, month, day (UTC)
+ * @param  unix_time  Seconds since 1970-01-01 00:00:00 UTC
+ * @param  year       Output: full year (e.g. 2026)
+ * @param  month      Output: 1-12
+ * @param  day        Output: 1-31
+ */
+static void unix_to_ymd(uint32_t unix_time, uint32_t *year, uint32_t *month, uint32_t *day)
+{
+    uint32_t days = unix_time / 86400;
+
+    /* Find year */
+    uint32_t y = 1970;
+    while (1) {
+        uint32_t days_this_year = is_leap_year(y) ? 366 : 365;
+        if (days < days_this_year) break;
+        days -= days_this_year;
+        y++;
+    }
+
+    /* Find month */
+    uint32_t m = 1;
+    while (m <= 12) {
+        uint32_t dim = days_in_month[m - 1];
+        if (m == 2 && is_leap_year(y)) dim = 29;
+        if (days < dim) break;
+        days -= dim;
+        m++;
+    }
+
+    *year  = y;
+    *month = m;
+    *day   = days + 1;  /* days is 0-based within month */
+}
+
 /** PPP serial read thread priority */
 #define PPP_READ_THREAD_PRIO    14
 #define PPP_READ_THREAD_STACK   1024
@@ -69,7 +115,7 @@
 #define PACKET_PAYLOAD_SIZE     1536    /* Slightly larger than PPP MTU (1500) */
 
 /** PPP thread stack size */
-#define PPP_THREAD_STACK_SIZE   1024*5
+#define PPP_THREAD_STACK_SIZE   1024
 
 /** TCP/UDP client configuration — change these to match your server */
 #ifndef TCP_SERVER_HOST
@@ -139,7 +185,9 @@ static uint8_t ppp_created = 0;
 #define PPP_RX_BATCH_SIZE   1024
 static uint8_t ppp_rx_buf[PPP_RX_BATCH_SIZE];
 
-/* Serial port for PPP data (set by app_netxduo_set_serial) */
+/* Serial port for PPP data (set by app_netxduo_set_serial).
+ * In direct mode: bsp_serial_uart3
+ * In CMUX mode:   cmux_serial_get(CMUX_PPP_DLCI) */
 static bsp_serial_t *ppp_serial = NULL;
 
 /* Debug: track which init step failed (inspect in debugger) */
@@ -176,10 +224,54 @@ void app_netxduo_set_serial(bsp_serial_t *serial)
 
 /**
   * @brief  PPP byte send callback — called by NetX PPP to output one byte
+  * @note   Buffers bytes and flushes as a single DMA transfer per PPP frame.
+  *         Skips the opening 0x7E, buffers frame data, flushes on closing 0x7E.
   */
 static void ppp_byte_send(UCHAR byte)
 {
-    if (ppp_serial) ppp_serial->write(&byte, 1);
+    static uint8_t buf[256];
+    static uint16_t pos = 0;
+    static uint8_t in_escape = 0;
+
+    if (!ppp_serial) return;
+
+    /* 0x7D = PPP control-escape prefix, next byte is XOR 0x20 */
+    if (byte == 0x7D)
+    {
+        in_escape = 1;
+        if (pos < sizeof(buf)) buf[pos++] = byte;
+        return;
+    }
+    if (in_escape)
+    {
+        in_escape = 0;
+        if (pos < sizeof(buf)) buf[pos++] = byte;
+        return;
+    }
+
+    /* 0x7E = PPP frame flag (start/end) */
+    if (byte == 0x7E)
+    {
+        if (pos == 0)
+        {
+            /* Opening 0x7E — start of frame, skip it */
+            return;
+        }
+        /* Closing 0x7E — append and flush the complete frame */
+        if (pos < sizeof(buf)) buf[pos++] = byte;
+        ppp_serial->write(buf, pos);
+        pos = 0;
+    }
+    else
+    {
+        if (pos < sizeof(buf)) buf[pos++] = byte;
+        /* Safety: flush if buffer full (shouldn't happen for normal PPP frames) */
+        if (pos >= sizeof(buf))
+        {
+            ppp_serial->write(buf, pos);
+            pos = 0;
+        }
+    }
 }
 
 /**
@@ -221,7 +313,7 @@ static void print_ip_addresses(void)
     {
         LOG_W(TAG_PPP, "IPv4: not assigned");
     }
-
+		
     /* ---- IPv6 ---- */
 #ifdef FEATURE_NX_IPV6
     {
@@ -313,14 +405,25 @@ static void nx_driver_stm32_ppp(NX_IP_DRIVER *driver_req_ptr)
 
 /**
   * @brief  PPP serial read thread
-  * @note   Reads bytes in batches from UART3 and feeds them to NetX PPP
-  *         via nx_ppp_byte_receive() one byte at a time.
+  * @note   Reads PPP bytes from ppp_serial (UART3 or CMUX DLCI 2)
+  *         and feeds them to the NetX PPP parser.
   */
 static void ppp_read_thread_entry(ULONG param)
 {
     (void)param;
 
-    LOG_I(TAG_PPP, "PPP read thread started");
+    if (!ppp_serial) {
+        LOG_E(TAG_PPP, "PPP read thread: no serial port configured!");
+        return;
+    }
+
+    LOG_I(TAG_PPP, "PPP read thread started (serial: %s)", ppp_serial->name);
+
+    /* NOTE: Do NOT flush the ring buffer here!
+     * After ATD*99***1# returns CONNECT, the modem immediately starts sending
+     * PPP LCP frames. Any stale bytes in the buffer are likely legitimate PPP
+     * data that must be fed to nx_ppp_byte_receive(). Flushing would lose
+     * the initial LCP Configure-Request, causing PPP negotiation to hang. */
 
     while (1)
     {
@@ -352,9 +455,6 @@ static void ntp_thread_entry(ULONG param)
                            &actual_flags, TX_WAIT_FOREVER);
 
         LOG_I(TAG_NTP, "PPP link is up, starting time sync...");
-
-        /* Small delay for IP stack to stabilize */
-        tx_thread_sleep(1000);
 
         /* ---- Step 3: Resolve NTP server hostname ---- */
         LOG_I(TAG_DNS, "Resolving %s ...", NTP_SERVER_HOST);
@@ -442,19 +542,22 @@ static void ntp_thread_entry(ULONG param)
                     LOG_E(TAG_NTP, "RTC SetTime failed");
                 }
 
-                /* Calculate date from Unix timestamp (simplified) */
-                /* Days since epoch */
-                uint32_t days = unix_time / 86400;
+                /* Calculate date from Unix timestamp */
+                uint32_t rtc_year, rtc_month, rtc_day;
+                unix_to_ymd(unix_time, &rtc_year, &rtc_month, &rtc_day);
+
                 /* Day of week (Jan 1 1970 was Thursday=4) */
+                uint32_t days = unix_time / 86400;
                 sDate.WeekDay = (uint8_t)((days + 4) % 7);
-                /* Simplified date — for full accuracy use a proper algorithm */
-                sDate.Year    = 26;  /* 2026 — placeholder */
-                sDate.Month   = RTC_MONTH_JUNE;
-                sDate.Date    = (uint8_t)((days % 30) + 1);
+                sDate.Year    = (uint8_t)(rtc_year - 2000);
+                sDate.Month   = (uint8_t)rtc_month;
+                sDate.Date    = (uint8_t)rtc_day;
                 if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN) != HAL_OK)
                 {
                     LOG_E(TAG_NTP, "RTC SetDate failed");
                 }
+
+                LOG_I(TAG_NTP, "Date (UTC+8): %04lu-%02lu-%02lu", rtc_year, rtc_month, rtc_day);
 
                 LOG_I(TAG_NTP, "RTC synchronized successfully!");
             }
@@ -616,7 +719,10 @@ UINT app_netxduo_create_ppp(void)
 
     if (ppp_created) return NX_SUCCESS;
 
-    /* ---- Step 1: Create PPP instance (must be in thread context) ---- */
+    /* ---- Step 1: Create PPP instance (must be in thread context) ----
+     * NOTE: nx_ppp_create initializes the PPP structure and associates it
+     * with the IP instance. nx_ppp_driver (used in nx_ip_create) expects
+     * the PPP instance to already exist. So PPP must be created first. */
     LOG_I(TAG, "Creating PPP instance...");
 
     status = nx_ppp_create(&ppp_0, "PPP", &ip_0,
@@ -631,7 +737,7 @@ UINT app_netxduo_create_ppp(void)
     }
     LOG_I(TAG, "PPP instance created (id=0x%08lX)", (unsigned long)ppp_0.nx_ppp_id);
 
-    /* ---- Step 2: Create IP instance (after PPP so driver is ready) ---- */
+    /* ---- Step 2: Create IP instance (PPP driver is now ready) ---- */
     LOG_I(TAG, "Creating IP instance...");
 
     status = nx_ip_create(&ip_0, "NetX IP Instance", IP_ADDRESS(0, 0, 0, 0),
@@ -762,17 +868,47 @@ static UINT resolve_host(const char *host, ULONG *ip_address)
 
     /* Not an IP address — resolve via DNS */
     static NX_DNS dns_resolve;
-    ULONG fallback[] = { IP_ADDRESS(8,8,8,8), IP_ADDRESS(114,114,114,114) };
     UINT status;
 
     status = nx_dns_create(&dns_resolve, &ip_0, (UCHAR *)"Resolver");
     if (status != NX_SUCCESS) return status;
 
-    for (UINT i = 0; i < sizeof(fallback)/sizeof(fallback[0]); i++)
-        nx_dns_server_add(&dns_resolve, fallback[i]);
+    /* Add DNS servers from PPP IPCP negotiation (carrier-assigned) */
+    ULONG dns1 = 0, dns2 = 0;
+    nx_ppp_dns_address_get(&ppp_0, &dns1);
+    nx_ppp_secondary_dns_address_get(&ppp_0, &dns2);
+
+    if (dns1) nx_dns_server_add(&dns_resolve, dns1);
+    if (dns2) nx_dns_server_add(&dns_resolve, dns2);
+
+    /* Fallback DNS if carrier didn't provide any */
+    if (!dns1 && !dns2) {
+        nx_dns_server_add(&dns_resolve, IP_ADDRESS(8, 8, 8, 8));
+        nx_dns_server_add(&dns_resolve, IP_ADDRESS(114, 114, 114, 114));
+        LOG_W(TAG_DNS, "No carrier DNS, using fallback 8.8.8.8 / 114.114.114.114");
+    } else {
+        LOG_I(TAG_DNS, "DNS servers: %lu.%lu.%lu.%lu, %lu.%lu.%lu.%lu",
+              (dns1 >> 24) & 0xFF, (dns1 >> 16) & 0xFF,
+              (dns1 >> 8)  & 0xFF,  dns1 & 0xFF,
+              (dns2 >> 24) & 0xFF, (dns2 >> 16) & 0xFF,
+              (dns2 >> 8)  & 0xFF,  dns2 & 0xFF);
+    }
+
+    /* Log IP routing info for debugging */
+    ULONG ip_addr = 0, mask = 0, gw = 0;
+    nx_ip_address_get(&ip_0, &ip_addr, &mask);
+    nx_ip_gateway_address_get(&ip_0, &gw);
+    LOG_D(TAG_DNS, "IP: %lu.%lu.%lu.%lu  GW: %lu.%lu.%lu.%lu",
+          (ip_addr >> 24) & 0xFF, (ip_addr >> 16) & 0xFF,
+          (ip_addr >> 8)  & 0xFF,  ip_addr & 0xFF,
+          (gw >> 24) & 0xFF, (gw >> 16) & 0xFF,
+          (gw >> 8)  & 0xFF,  gw & 0xFF);
 
     status = nx_dns_host_by_name_get(&dns_resolve, (UCHAR *)host,
                                       ip_address, 5 * NX_IP_PERIODIC_RATE);
+    if (status != NX_SUCCESS) {
+        LOG_E(TAG_DNS, "DNS query failed: 0x%02X (host=%s)", status, host);
+    }
     nx_dns_delete(&dns_resolve);
     return status;
 }
@@ -797,11 +933,19 @@ static void tcp_client_thread_entry(ULONG param)
     UINT status;
     ULONG server_ip;
 
-    /* Resolve server address */
-    status = resolve_host(TCP_SERVER_HOST, &server_ip);
+    /* Resolve server address (retry up to 5 times with backoff) */
+    {
+        UINT dns_retries;
+        for (dns_retries = 0; dns_retries < 5; dns_retries++) {
+            status = resolve_host(TCP_SERVER_HOST, &server_ip);
+            if (status == NX_SUCCESS) break;
+            LOG_W(TAG_TCP, "Resolve attempt %u failed: 0x%02X", dns_retries + 1, status);
+            tx_thread_sleep(2000 * (dns_retries + 1));
+        }
+    }
     if (status != NX_SUCCESS)
     {
-        LOG_E(TAG_TCP, "Resolve '%s' failed: 0x%02X", TCP_SERVER_HOST, status);
+        LOG_E(TAG_TCP, "Resolve '%s' failed after 5 attempts: 0x%02X", TCP_SERVER_HOST, status);
         return;
     }
 
@@ -924,11 +1068,19 @@ static void udp_client_thread_entry(ULONG param)
     UINT status;
     ULONG server_ip;
 
-    /* Resolve server address */
-    status = resolve_host(UDP_SERVER_HOST, &server_ip);
+    /* Resolve server address (retry up to 5 times with backoff) */
+    {
+        UINT dns_retries;
+        for (dns_retries = 0; dns_retries < 5; dns_retries++) {
+            status = resolve_host(UDP_SERVER_HOST, &server_ip);
+            if (status == NX_SUCCESS) break;
+            LOG_W(TAG_UDP, "Resolve attempt %u failed: 0x%02X", dns_retries + 1, status);
+            tx_thread_sleep(2000 * (dns_retries + 1));
+        }
+    }
     if (status != NX_SUCCESS)
     {
-        LOG_E(TAG_UDP, "Resolve '%s' failed: 0x%02X", UDP_SERVER_HOST, status);
+        LOG_E(TAG_UDP, "Resolve '%s' failed after 5 attempts: 0x%02X", UDP_SERVER_HOST, status);
         return;
     }
 

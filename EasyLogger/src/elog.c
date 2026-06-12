@@ -7,6 +7,7 @@
 
 #include "elog.h"
 #include "tx_api.h"
+#include "rtc.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
@@ -44,11 +45,12 @@ static TX_MUTEX output_mutex;
 static char     async_buf[ELOG_ASYNC_BUF_SIZE];
 static volatile uint16_t async_head;
 static volatile uint16_t async_tail;
+static volatile uint32_t async_drop_count;  /* Bytes dropped due to overflow */
 static TX_THREAD async_thread;
 static TX_SEMAPHORE async_sem;
 
 /* Async thread stack — allocated from the TX byte pool or static */
-#define ASYNC_THREAD_STACK_SIZE  1024
+#define ASYNC_THREAD_STACK_SIZE  2*1024
 static uint8_t async_stack[ASYNC_THREAD_STACK_SIZE];
 #endif
 
@@ -59,25 +61,56 @@ extern void elog_port_output(const char *data, uint16_t len);
 /* ---------- Private helpers ---------------------------------------------- */
 
 /**
- * @brief  Get timestamp in milliseconds (from ThreadX tick counter)
+ * @brief  Get formatted timestamp from RTC — "HH:MM:SS"
+ * @note   Returns a static buffer, not reentrant.
+ *         HAL_RTC_GetDate must be called after GetTime to unlock shadow regs.
  */
-static uint32_t get_timestamp(void)
+static const char *get_timestamp(void)
 {
-    return (uint32_t)tx_time_get();
+    static char ts_buf[12];
+    RTC_TimeTypeDef sTime;
+    RTC_DateTypeDef sDate;
+
+    if (HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN) == HAL_OK &&
+        HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN) == HAL_OK)
+    {
+        snprintf(ts_buf, sizeof(ts_buf), "%02d:%02d:%02d",
+                 sTime.Hours, sTime.Minutes, sTime.Seconds);
+    }
+    else
+    {
+        snprintf(ts_buf, sizeof(ts_buf), "??:??:??");
+    }
+    return ts_buf;
 }
 
 #if ELOG_ASYNC_MODE_ENABLE
 
 /**
- * @brief  Write data into async ring buffer
+ * @brief  Write data into async ring buffer (drop newest if full)
  */
 static void async_write(const char *data, uint16_t len)
 {
+    uint16_t h = async_head;
+    uint16_t t = async_tail;
+    uint16_t size = ELOG_ASYNC_BUF_SIZE;
+    uint16_t used = (h >= t) ? (h - t) : (size - t + h);
+    uint16_t space = size - used - 1;  /* -1: never let head == tail (empty) */
+
+    if (len > space) {
+        async_drop_count += len;
+        return;
+    }
+
     for (uint16_t i = 0; i < len; i++)
     {
-        async_buf[async_head] = data[i];
-        async_head = (async_head + 1) % ELOG_ASYNC_BUF_SIZE;
+        async_buf[h] = data[i];
+        h = (h + 1) % size;
     }
+
+    /* Compiler barrier: ensure all data written before head update */
+    __asm volatile ("" ::: "memory");
+    async_head = h;
 }
 
 /**
@@ -86,11 +119,15 @@ static void async_write(const char *data, uint16_t len)
 static uint16_t async_read(char *buf, uint16_t max_len)
 {
     uint16_t count = 0;
-    while (count < max_len && async_tail != async_head)
+    uint16_t t = async_tail;
+    while (count < max_len && t != async_head)
     {
-        buf[count++] = async_buf[async_tail];
-        async_tail = (async_tail + 1) % ELOG_ASYNC_BUF_SIZE;
+        buf[count++] = async_buf[t];
+        t = (t + 1) % ELOG_ASYNC_BUF_SIZE;
     }
+    /* Compiler barrier: ensure all reads complete before tail update */
+    __asm volatile ("" ::: "memory");
+    async_tail = t;
     return count;
 }
 
@@ -112,6 +149,17 @@ static void async_thread_entry(ULONG param)
         while ((n = async_read(drain_buf, sizeof(drain_buf))) > 0)
         {
             elog_port_output(drain_buf, n);
+        }
+
+        /* Report overflow — use port output directly to avoid recursion */
+        if (async_drop_count > 0)
+        {
+            char warn[64];
+            int len = snprintf(warn, sizeof(warn),
+                               "\x1b[33m[ELOG] %lu bytes dropped (async buf full)\x1b[0m\r\n",
+                               (unsigned long)async_drop_count);
+            elog_port_output(warn, len);
+            async_drop_count = 0;
         }
     }
 }
@@ -177,7 +225,7 @@ void elog_output(uint8_t level, const char *tag, const char *file, long line, co
 
     /* Timestamp */
     pos += snprintf(line_buf + pos, sizeof(line_buf) - pos,
-                    "[%010lu] ", (unsigned long)get_timestamp());
+                    "[%s] ", get_timestamp());
 
     /* Level tag */
     pos += snprintf(line_buf + pos, sizeof(line_buf) - pos,
@@ -255,8 +303,8 @@ void elog_hexdump(const char *tag, const void *data, uint16_t len)
 
     for (uint16_t i = 0; i < len; i += 16)
     {
-        pos = snprintf(line, sizeof(line), "[%010lu] D/%-*s ",
-                       (unsigned long)get_timestamp(), ELOG_TAG_MAX_LEN, tag);
+        pos = snprintf(line, sizeof(line), "[%s] D/%-*s ",
+                       get_timestamp(), ELOG_TAG_MAX_LEN, tag);
 
         /* Hex bytes */
         for (uint16_t j = 0; j < 16; j++)

@@ -88,9 +88,18 @@ void NMI_Handler(void)
 
 /**
   * @brief This function handles Hard fault interrupt.
-  * @note   Overridden by fault_debug.c — provides register dump via LPUART1
   */
-/* HardFault_Handler is in fault_debug.c */
+void HardFault_Handler(void)
+{
+  /* USER CODE BEGIN HardFault_IRQn 0 */
+
+  /* USER CODE END HardFault_IRQn 0 */
+  while (1)
+  {
+    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
+    /* USER CODE END W1_HardFault_IRQn 0 */
+  }
+}
 
 /**
   * @brief This function handles Memory management fault.

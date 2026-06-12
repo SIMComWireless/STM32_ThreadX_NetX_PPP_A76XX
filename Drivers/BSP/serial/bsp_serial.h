@@ -31,6 +31,7 @@ extern "C" {
 
 typedef struct bsp_serial {
     const char *name;       /**< Human-readable name (e.g. "UART3", "USB CDC") */
+    void       *user_data;  /**< Opaque per-instance context (e.g. DLCI ctx) */
 
     /**
      * @brief  Initialize the serial port

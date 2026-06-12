@@ -30,7 +30,7 @@
 #define ELOG_ASYNC_MODE_ENABLE          1
 
 /* Async output ring buffer size */
-#define ELOG_ASYNC_BUF_SIZE             2048
+#define ELOG_ASYNC_BUF_SIZE             4096
 
 /* Enable assertion checks */
 #define ELOG_ASSERT_ENABLE              1
