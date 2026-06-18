@@ -20,6 +20,7 @@
 #include "lwrb.h"
 #include "tx_api.h"
 #include "stm32l4xx_hal.h"
+#include "elog.h"
 #include <string.h>
 
 /* ---------- External handles (from CubeMX-generated code) ---------------- */
@@ -72,6 +73,10 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     {
         if (Size > 0)
         {
+            #if BSP_UART3_DEBUG
+                elog_hexdump("U3RX", 16, rx_dma_buf[rx_active_buf], Size);
+            #endif
+
             if (rx_hook)
             {
                 /* Hook installed — route raw data to protocol layer */
@@ -158,6 +163,10 @@ static void uart3_write(const uint8_t *data, uint16_t len)
 {
     if (len == 0) return;
 
+    #if BSP_UART3_DEBUG
+        elog_hexdump("U3TX", 16, data, len);
+    #endif
+
     /* Wait for any previous TX to complete */
     tx_semaphore_get(&tx_sem, TX_WAIT_FOREVER);
 
@@ -168,6 +177,8 @@ static void uart3_write(const uint8_t *data, uint16_t len)
         tx_semaphore_put(&tx_sem);
         return;
     }
+
+    
 
     /* DMA started successfully — HAL_UART_TxCpltCallback will release semaphore */
 }

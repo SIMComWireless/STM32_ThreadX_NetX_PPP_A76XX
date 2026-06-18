@@ -1834,16 +1834,16 @@
 //#define NX_PPP_COMPRESSION_ENABLE
 
 /* Enable internal PPP debug log */
-//#define NX_PPP_DEBUG_LOG_ENABLE
+//#define NX_PPP_DEBUG_log_eNABLE
 
 /* Enable PPP debug log printf to stdio */
 #define NX_PPP_DEBUG_LOG_PRINT_ENABLE
 
 /* PPP debug log size and frame dump size */
-#if defined(NX_PPP_DEBUG_LOG_ENABLE) && defined(NX_PPP_DEBUG_LOG_PRINT_ENABLE)
+#if defined(NX_PPP_DEBUG_log_eNABLE) && defined(NX_PPP_DEBUG_LOG_PRINT_ENABLE)
 #define NX_PPP_DEBUG_LOG_SIZE       128
 #define NX_PPP_DEBUG_FRAME_SIZE     128
-#endif /* NX_PPP_DEBUG_LOG_ENABLE && NX_PPP_DEBUG_LOG_PRINT_ENABLE */
+#endif /* NX_PPP_DEBUG_log_eNABLE && NX_PPP_DEBUG_LOG_PRINT_ENABLE */
 
 #define NX_PPP_BASE_TIMEOUT                                 (NX_IP_PERIODIC_RATE * 2)        /* 1 second  */
 

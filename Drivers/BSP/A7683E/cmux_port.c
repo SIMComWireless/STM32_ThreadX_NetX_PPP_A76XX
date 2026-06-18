@@ -69,7 +69,7 @@ static void cmux_thread_entry(ULONG param)
     (void)param;
     uint8_t buf[256];
 
-    LOG_I(TAG, "CMUX thread started");
+    elog_d(TAG, "CMUX thread started");
 
     while (cmux_thread_running)
     {
@@ -84,12 +84,12 @@ static void cmux_thread_entry(ULONG param)
         uint32_t n;
         while ((n = lwrb_read(&cmux_rb, buf, sizeof(buf))) > 0)
         {
-            LOG_D(TAG, "CMUX RX [%u bytes]", (unsigned)n);
+            elog_d(TAG, "CMUX RX [%u bytes]", (unsigned)n);
             cmux_feed(&g_cmux, buf, (uint16_t)n);
         }
     }
 
-    LOG_I(TAG, "CMUX thread stopped");
+    elog_d(TAG, "CMUX thread stopped");
 }
 
 /* ---------- ISR RX hook -------------------------------------------------- */
@@ -142,7 +142,7 @@ void cmux_bridge_start(void)
     /* Install ISR hook — data now goes to ring buffer */
     bsp_uart3_set_rx_hook(cmux_rx_isr_hook);
 
-    LOG_I(TAG, "CMUX bridge started (ISR → ring → CMUX thread)");
+    elog_d(TAG, "CMUX bridge started (ISR → ring → CMUX thread)");
 }
 
 /**
@@ -167,7 +167,7 @@ void cmux_bridge_stop(void)
     tx_thread_delete(&cmux_thread);
     tx_event_flags_delete(&cmux_events);
 
-    LOG_I(TAG, "CMUX bridge stopped");
+    eelog_i(TAG, "CMUX bridge stopped");
 }
 
 #endif /* CMUX_ENABLE */

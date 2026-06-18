@@ -102,12 +102,13 @@ static void unix_to_ymd(uint32_t unix_time, uint32_t *year, uint32_t *month, uin
     *day   = days + 1;  /* days is 0-based within month */
 }
 
-/** PPP serial read thread priority */
-#define PPP_READ_THREAD_PRIO    14
+/** PPP serial read thread priority — highest app priority,
+ *  must keep up with UART3 DMA to avoid byte loss */
+#define PPP_READ_THREAD_PRIO    5
 #define PPP_READ_THREAD_STACK   1024
 
-/** NTP sync thread priority */
-#define NTP_THREAD_PRIO         16
+/** NTP sync thread priority — background, runs once after PPP up */
+#define NTP_THREAD_PRIO         31
 #define NTP_THREAD_STACK        1024*2
 
 /** Packet pool configuration */
@@ -134,10 +135,10 @@ static void unix_to_ymd(uint32_t unix_time, uint32_t *year, uint32_t *month, uin
 #define CLIENT_SEND_PERIOD      5000    /* Send period in ticks (5s at 1000Hz) */
 #endif
 
-/** TCP/UDP client thread priorities */
-#define TCP_CLIENT_THREAD_PRIO  18
+/** TCP/UDP client thread priorities — unique per thread */
+#define TCP_CLIENT_THREAD_PRIO  32
 #define TCP_CLIENT_THREAD_STACK 1024*3
-#define UDP_CLIENT_THREAD_PRIO  19
+#define UDP_CLIENT_THREAD_PRIO  33
 #define UDP_CLIENT_THREAD_STACK 1024*3
 
 /** TCP/UDP receive buffer size */
@@ -156,6 +157,7 @@ static NX_PACKET_POOL    pool_0;
 static NX_IP             ip_0;
 NX_PPP                   ppp_0;
 static NX_SNTP_CLIENT    sntp_client;
+
 
 /* Memory pointers — allocated from NX byte pool */
 static VOID *pool_memory_ptr;
@@ -193,6 +195,11 @@ static bsp_serial_t *ppp_serial = NULL;
 /* Debug: track which init step failed (inspect in debugger) */
 volatile UINT netx_init_status = 0;
 volatile UINT netx_init_step = 0;
+
+/* Active IP/pool accessors — return the PPP IP instance and its packet pool.
+ * Used by NTP, TCP, UDP threads to get the active network context. */
+NX_IP *app_netxduo_get_active_ip(void)   { return &ip_0; }
+NX_PACKET_POOL *app_netxduo_get_active_pool(void) { return &pool_0; }
 
 /* USER CODE BEGIN PV */
 /* USER CODE END PV */
@@ -236,42 +243,48 @@ void app_netxduo_set_serial(bsp_serial_t *serial)
   */
 static void ppp_byte_send(UCHAR byte)
 {
-    /* PPP control-escape: 0x7D means next byte is XOR'd with 0x20 */
-    static uint8_t buf[256];
+    /*
+     * Buffer an entire PPP frame (leading 0x7E … trailing 0x7E) and flush
+     * it in a single uart3_write() call — one DMA transfer per frame.
+     *
+     * Worst-case size: MRU(1500) + addr/ctrl(2) + proto(2) + FCS(2) = 1506
+     * raw bytes, each potentially escaped (×2) = 3012, plus two 0x7E flags.
+     * 4096 bytes covers this with margin.
+     */
+    static uint8_t  buf[4096];
     static uint16_t pos = 0;
-    static uint8_t in_escape = 0;
 
     if (!ppp_serial) return;
 
-    /* Buffer the byte */
+    /* 0x7E = PPP flag byte — marks frame start / end */
+    if (byte == 0x7E)
+    {
+        if (pos == 0)
+        {
+            /* Start of new frame — begin buffering */
+            buf[pos++] = 0x7E;
+        }
+        else if (buf[0] == 0x7E)
+        {
+            /* End of frame — flush everything in one write */
+            if (pos < sizeof(buf))
+                buf[pos++] = 0x7E;
+            ppp_serial->write(buf, pos);
+            pos = 0;
+        }
+        else
+        {
+            /* Stale non-PPP data — discard and start fresh frame */
+            pos = 0;
+            buf[pos++] = 0x7E;
+        }
+        return;
+    }
+
+    /* Buffer frame payload (space permitting) */
     if (pos < sizeof(buf))
     {
         buf[pos++] = byte;
-    }
-
-    /* Track escape state for frame boundary detection */
-    if (byte == 0x7D)
-    {
-        in_escape = 1;
-        return;
-    }
-    if (in_escape)
-    {
-        in_escape = 0;
-        return;
-    }
-
-    /* 0x7E = PPP flag byte (frame start/end). Flush the buffer. */
-    if (byte == 0x7E)
-    {
-        if (pos > 0) ppp_serial->write(buf, pos);
-        pos = 0;
-    }
-    /* Also flush if buffer is full (safety net) */
-    else if (pos >= sizeof(buf))
-    {
-        ppp_serial->write(buf, pos);
-        pos = 0;
     }
 }
 
@@ -283,36 +296,37 @@ static void ppp_byte_send(UCHAR byte)
 static void print_ip_addresses(void)
 {
     UINT status;
+    NX_IP *active_ip = &ip_0;
 
     /* ---- IPv4 ---- */
     ULONG ipv4_addr = 0, ipv4_mask = 0;
-    status = nx_ip_address_get(&ip_0, &ipv4_addr, &ipv4_mask);
+    status = nx_ip_address_get(active_ip, &ipv4_addr, &ipv4_mask);
     if (status == NX_SUCCESS && ipv4_addr != 0)
     {
-        LOG_I(TAG_PPP, "IPv4: %lu.%lu.%lu.%lu  Mask: %lu.%lu.%lu.%lu",
+        elog_d(TAG_PPP, "IPv4: %lu.%lu.%lu.%lu  Mask: %lu.%lu.%lu.%lu",
               (ipv4_addr >> 24) & 0xFF, (ipv4_addr >> 16) & 0xFF,
               (ipv4_addr >> 8)  & 0xFF,  ipv4_addr & 0xFF,
               (ipv4_mask >> 24) & 0xFF, (ipv4_mask >> 16) & 0xFF,
               (ipv4_mask >> 8)  & 0xFF,  ipv4_mask & 0xFF);
 
         ULONG gw = 0;
-        nx_ip_gateway_address_get(&ip_0, &gw);
-        LOG_I(TAG_PPP, "Gateway: %lu.%lu.%lu.%lu",
+        nx_ip_gateway_address_get(active_ip, &gw);
+        elog_d(TAG_PPP, "Gateway: %lu.%lu.%lu.%lu",
               (gw >> 24) & 0xFF, (gw >> 16) & 0xFF,
               (gw >> 8)  & 0xFF,  gw & 0xFF);
 
         /* Interface status */
         ULONG if_link_up = 0;
-        nx_ip_interface_status_check(&ip_0, 0, NX_IP_LINK_ENABLED,
+        nx_ip_interface_status_check(active_ip, 0, NX_IP_LINK_ENABLED,
                                      &if_link_up, NX_NO_WAIT);
-        LOG_I(TAG_PPP, "Interface: %s, ARP: %s, MTU: %lu",
+        elog_d(TAG_PPP, "Interface: %s, ARP: %s, MTU: %lu",
               if_link_up ? "UP" : "DOWN",
-              ip_0.nx_ip_interface[0].nx_interface_address_mapping_needed ? "yes" : "no",
-              (unsigned long)ip_0.nx_ip_interface[0].nx_interface_ip_mtu_size);
+              active_ip->nx_ip_interface[0].nx_interface_address_mapping_needed ? "yes" : "no",
+              (unsigned long)active_ip->nx_ip_interface[0].nx_interface_ip_mtu_size);
     }
     else
     {
-        LOG_W(TAG_PPP, "IPv4: not assigned");
+        elog_w(TAG_PPP, "IPv4: not assigned");
     }
 		
     /* ---- IPv6 ---- */
@@ -325,10 +339,10 @@ static void print_ip_addresses(void)
             ULONG prefix_len = 0;
             UINT  if_idx = 0;
 
-            status = nxd_ipv6_address_get(&ip_0, i, &nxd_addr, &prefix_len, &if_idx);
+            status = nxd_ipv6_address_get(active_ip, i, &nxd_addr, &prefix_len, &if_idx);
             if (status == NX_SUCCESS && nxd_addr.nxd_ip_address.v6[0] != 0)
             {
-                LOG_I(TAG_PPP, "IPv6[%u]: %04lX:%04lX:%04lX:%04lX:%04lX:%04lX:%04lX:%04lX /%lu (if=%u)",
+                elog_d(TAG_PPP, "IPv6[%u]: %04lX:%04lX:%04lX:%04lX:%04lX:%04lX:%04lX:%04lX /%lu (if=%u)",
                       i,
                       (nxd_addr.nxd_ip_address.v6[0] >> 16) & 0xFFFF,
                        nxd_addr.nxd_ip_address.v6[0] & 0xFFFF,
@@ -344,11 +358,11 @@ static void print_ip_addresses(void)
         }
         if (!has_ipv6)
         {
-            LOG_W(TAG_PPP, "IPv6: not assigned");
+            elog_w(TAG_PPP, "IPv6: not assigned");
         }
     }
 #else
-    LOG_D(TAG_PPP, "IPv6: disabled (NX_DISABLE_IPV6)");
+    elog_d(TAG_PPP, "IPv6: disabled (NX_DISABLE_IPV6)");
 #endif /* FEATURE_NX_IPV6 */
 }
 
@@ -357,7 +371,7 @@ static void print_ip_addresses(void)
   */
 static void ppp_link_up_callback(NX_PPP *ppp_ptr)
 {
-    LOG_I(TAG_PPP, "PPP link UP");
+    elog_d(TAG_PPP, "PPP link UP");
     /* Print negotiated IP addresses */
     print_ip_addresses();
     tx_event_flags_set(&ppp_events, PPP_EVT_LINK_UP, TX_OR);
@@ -368,7 +382,7 @@ static void ppp_link_up_callback(NX_PPP *ppp_ptr)
   */
 static void ppp_link_down_callback(NX_PPP *ppp_ptr)
 {
-    LOG_W(TAG_PPP, "PPP link DOWN");
+    elog_w(TAG_PPP, "PPP link DOWN");
     tx_event_flags_set(&ppp_events, PPP_EVT_LINK_DOWN, TX_OR);
 }
 
@@ -414,11 +428,11 @@ static void ppp_read_thread_entry(ULONG param)
     (void)param;
 
     if (!ppp_serial) {
-        LOG_E(TAG_PPP, "PPP read thread: no serial port configured!");
+        elog_e(TAG_PPP, "PPP read thread: no serial port configured!");
         return;
     }
 
-    LOG_I(TAG_PPP, "PPP read thread started (serial: %s)", ppp_serial->name);
+    elog_d(TAG_PPP, "PPP read thread started (serial: %s)", ppp_serial->name);
 
     /* NOTE: Do NOT flush the ring buffer here!
      * After ATD*99***1# returns CONNECT, the modem immediately starts sending
@@ -451,24 +465,24 @@ static void ntp_thread_entry(ULONG param)
     while (1)
     {
         /* Wait for PPP link-up event */
-        LOG_I(TAG_NTP, "Waiting for PPP link...");
+        elog_d(TAG_NTP, "Waiting for PPP link...");
         tx_event_flags_get(&ppp_events, PPP_EVT_LINK_UP, TX_OR_CLEAR,
                            &actual_flags, TX_WAIT_FOREVER);
 
-        LOG_I(TAG_NTP, "PPP link is up, starting time sync...");
+        elog_d(TAG_NTP, "PPP link is up, starting time sync...");
 
         /* ---- Step 3: Resolve NTP server hostname ---- */
-        LOG_I(TAG_DNS, "Resolving %s ...", NTP_SERVER_HOST);
+        elog_d(TAG_DNS, "Resolving %s ...", NTP_SERVER_HOST);
         status = resolve_host(NTP_SERVER_HOST, &ntp_ip_address);
         if (status != NX_SUCCESS)
         {
-            LOG_W(TAG_DNS, "DNS resolution failed: 0x%02X, using fallback IP", status);
+            elog_w(TAG_DNS, "DNS resolution failed: 0x%02X, using fallback IP", status);
             ntp_ip_address = IP_ADDRESS(203, 107, 6, 88);  /* ntp.aliyun.com fallback */
-            LOG_I(TAG_NTP, "NTP server: 203.107.6.88 (fallback IP)");
+            elog_d(TAG_NTP, "NTP server: 203.107.6.88 (fallback IP)");
         }
         else
         {
-            LOG_I(TAG_NTP, "NTP server: %s = %lu.%lu.%lu.%lu",
+            elog_d(TAG_NTP, "NTP server: %s = %lu.%lu.%lu.%lu",
                   NTP_SERVER_HOST,
                   (ntp_ip_address >> 24) & 0xFF,
                   (ntp_ip_address >> 16) & 0xFF,
@@ -477,11 +491,14 @@ static void ntp_thread_entry(ULONG param)
         }
 
         /* ---- Step 5: Create SNTP client ---- */
-        status = nx_sntp_client_create(&sntp_client, &ip_0, 0, &pool_0,
+        NX_IP *active_ip = app_netxduo_get_active_ip();
+        NX_PACKET_POOL *active_pool = app_netxduo_get_active_pool();
+        if (active_ip == NULL || active_pool == NULL) { continue; }
+        status = nx_sntp_client_create(&sntp_client, active_ip, 0, active_pool,
                                         NX_NULL, NX_NULL, NX_NULL);
         if (status != NX_SUCCESS)
         {
-            LOG_E(TAG_NTP, "SNTP client create failed: 0x%02X", status);
+            elog_e(TAG_NTP, "SNTP client create failed: 0x%02X", status);
             continue;
         }
 
@@ -489,7 +506,7 @@ static void ntp_thread_entry(ULONG param)
         status = nx_sntp_client_initialize_unicast(&sntp_client, ntp_ip_address);
         if (status != NX_SUCCESS)
         {
-            LOG_E(TAG_NTP, "SNTP unicast init failed: 0x%02X", status);
+            elog_e(TAG_NTP, "SNTP unicast init failed: 0x%02X", status);
             nx_sntp_client_delete(&sntp_client);
             continue;
         }
@@ -498,13 +515,13 @@ static void ntp_thread_entry(ULONG param)
         status = nx_sntp_client_run_unicast(&sntp_client);
         if (status != NX_SUCCESS)
         {
-            LOG_E(TAG_NTP, "SNTP run failed: 0x%02X", status);
+            elog_e(TAG_NTP, "SNTP run failed: 0x%02X", status);
             nx_sntp_client_delete(&sntp_client);
             continue;
         }
 
         /* ---- Step 6: Request time from NTP server ---- */
-        LOG_I(TAG_NTP, "Requesting time from %lu.%lu.%lu.%lu ...",
+        elog_d(TAG_NTP, "Requesting time from %lu.%lu.%lu.%lu ...",
               (ntp_ip_address >> 24) & 0xFF,
               (ntp_ip_address >> 16) & 0xFF,
               (ntp_ip_address >> 8) & 0xFF,
@@ -520,8 +537,8 @@ static void ntp_thread_entry(ULONG param)
                 /* Convert NTP epoch (1900) to Unix epoch (1970) */
                 uint32_t unix_time = seconds - NTP_EPOCH_OFFSET;
 
-                LOG_I(TAG_NTP, "NTP time received!");
-                LOG_I(TAG_NTP, "Unix timestamp: %lu", (unsigned long)unix_time);
+                elog_d(TAG_NTP, "NTP time received!");
+                elog_d(TAG_NTP, "Unix timestamp: %lu", (unsigned long)unix_time);
 
                 /* ---- Step 7: Set RTC ---- */
                 /* Calculate human-readable time */
@@ -529,7 +546,7 @@ static void ntp_thread_entry(ULONG param)
                 uint32_t m = (unix_time / 60) % 60;
                 uint32_t h = ((unix_time / 3600) + 8) % 24; /* UTC+8 for China */
 
-                LOG_I(TAG_NTP, "Time (UTC+8): %02lu:%02lu:%02lu", h, m, s);
+                elog_d(TAG_NTP, "Time (UTC+8): %02lu:%02lu:%02lu", h, m, s);
 
                 /* Set the RTC */
                 RTC_TimeTypeDef sTime = {0};
@@ -540,7 +557,7 @@ static void ntp_thread_entry(ULONG param)
                 sTime.Seconds = (uint8_t)s;
                 if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN) != HAL_OK)
                 {
-                    LOG_E(TAG_NTP, "RTC SetTime failed");
+                    elog_e(TAG_NTP, "RTC SetTime failed");
                 }
 
                 /* Calculate date from Unix timestamp */
@@ -555,28 +572,28 @@ static void ntp_thread_entry(ULONG param)
                 sDate.Date    = (uint8_t)rtc_day;
                 if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN) != HAL_OK)
                 {
-                    LOG_E(TAG_NTP, "RTC SetDate failed");
+                    elog_e(TAG_NTP, "RTC SetDate failed");
                 }
 
-                LOG_I(TAG_NTP, "Date (UTC+8): %04lu-%02lu-%02lu", rtc_year, rtc_month, rtc_day);
+                elog_d(TAG_NTP, "Date (UTC+8): %04lu-%02lu-%02lu", rtc_year, rtc_month, rtc_day);
 
-                LOG_I(TAG_NTP, "RTC synchronized successfully!");
+                elog_d(TAG_NTP, "RTC synchronized successfully!");
             }
             else
             {
-                LOG_E(TAG_NTP, "Get local time failed: 0x%02X", status);
+                elog_e(TAG_NTP, "Get local time failed: 0x%02X", status);
             }
         }
         else
         {
-            LOG_E(TAG_NTP, "NTP request failed: 0x%02X", status);
+            elog_e(TAG_NTP, "NTP request failed: 0x%02X", status);
         }
 
         /* Cleanup */
         nx_sntp_client_stop(&sntp_client);
         nx_sntp_client_delete(&sntp_client);
 
-        LOG_I(TAG_NTP, "Time sync complete");
+        elog_d(TAG_NTP, "Time sync complete");
 
         /* Wait for next PPP link-down/up cycle */
         tx_event_flags_get(&ppp_events, PPP_EVT_LINK_DOWN, TX_OR_CLEAR,
@@ -724,7 +741,7 @@ UINT app_netxduo_create_ppp(void)
      * NOTE: nx_ppp_create initializes the PPP structure and associates it
      * with the IP instance. nx_ppp_driver (used in nx_ip_create) expects
      * the PPP instance to already exist. So PPP must be created first. */
-    LOG_I(TAG, "Creating PPP instance...");
+    elog_d(TAG, "Creating PPP instance...");
 
     status = nx_ppp_create(&ppp_0, "PPP", &ip_0,
                             ppp_stack_ptr, PPP_THREAD_STACK_SIZE, 15,
@@ -733,13 +750,13 @@ UINT app_netxduo_create_ppp(void)
                             ppp_byte_send);
     if (status != NX_SUCCESS)
     {
-        LOG_E(TAG, "PPP create failed: 0x%02X", status);
+        elog_e(TAG, "PPP create failed: 0x%02X", status);
         return status;
     }
-    LOG_I(TAG, "PPP instance created (id=0x%08lX)", (unsigned long)ppp_0.nx_ppp_id);
+    elog_d(TAG, "PPP instance created (id=0x%08lX)", (unsigned long)ppp_0.nx_ppp_id);
 
     /* ---- Step 2: Create IP instance (PPP driver is now ready) ---- */
-    LOG_I(TAG, "Creating IP instance...");
+    elog_d(TAG, "Creating IP instance...");
 
     status = nx_ip_create(&ip_0, "NetX IP Instance", IP_ADDRESS(0, 0, 0, 0),
                            IP_ADDRESS(0, 0, 0, 0), &pool_0,
@@ -747,7 +764,7 @@ UINT app_netxduo_create_ppp(void)
                            ip_memory_ptr, IP_MEMORY_SIZE, 1);
     if (status != NX_SUCCESS)
     {
-        LOG_E(TAG, "IP create failed: 0x%02X", status);
+        elog_e(TAG, "IP create failed: 0x%02X", status);
         return status;
     }
 
@@ -758,7 +775,7 @@ UINT app_netxduo_create_ppp(void)
     status = nx_arp_enable(&ip_0, arp_cache_ptr, ARP_CACHE_SIZE);
     if (status != NX_SUCCESS)
     {
-        LOG_E(TAG, "ARP enable failed: 0x%02X", status);
+        elog_e(TAG, "ARP enable failed: 0x%02X", status);
         return status;
     }
 
@@ -766,7 +783,7 @@ UINT app_netxduo_create_ppp(void)
     status = nx_icmp_enable(&ip_0);
     if (status != NX_SUCCESS)
     {
-        LOG_E(TAG, "ICMP enable failed: 0x%02X", status);
+        elog_e(TAG, "ICMP enable failed: 0x%02X", status);
         return status;
     }
 
@@ -774,7 +791,7 @@ UINT app_netxduo_create_ppp(void)
     status = nx_udp_enable(&ip_0);
     if (status != NX_SUCCESS)
     {
-        LOG_E(TAG, "UDP enable failed: 0x%02X", status);
+        elog_e(TAG, "UDP enable failed: 0x%02X", status);
         return status;
     }
 
@@ -782,7 +799,7 @@ UINT app_netxduo_create_ppp(void)
     status = nx_tcp_enable(&ip_0);
     if (status != NX_SUCCESS)
     {
-        LOG_E(TAG, "TCP enable failed: 0x%02X", status);
+        elog_e(TAG, "TCP enable failed: 0x%02X", status);
         return status;
     }
 
@@ -797,13 +814,13 @@ UINT app_netxduo_create_ppp(void)
     status = tx_thread_resume(&ppp_read_thread);
     if (status != TX_SUCCESS)
     {
-        LOG_E(TAG, "Failed to resume PPP read thread: 0x%02X", status);
+        elog_e(TAG, "Failed to resume PPP read thread: 0x%02X", status);
         return status;
     }
-    LOG_I(TAG, "PPP read thread resumed");
+    elog_d(TAG, "PPP read thread resumed");
 
     ppp_created = 1;
-    LOG_I(TAG, "PPP + IP instance ready");
+    elog_d(TAG, "PPP + IP instance ready");
     return NX_SUCCESS;
 }
 
@@ -816,11 +833,11 @@ UINT app_netxduo_start_ppp(void)
     UINT status = nx_ppp_start(&ppp_0);
     if (status == NX_SUCCESS)
     {
-        LOG_I(TAG, "PPP negotiation started — waiting for link-up...");
+        elog_d(TAG, "PPP negotiation started — waiting for link-up...");
     }
     else
     {
-        LOG_E(TAG, "nx_ppp_start failed: 0x%02X", status);
+        elog_e(TAG, "nx_ppp_start failed: 0x%02X", status);
     }
     return status;
 }
@@ -871,7 +888,9 @@ static UINT resolve_host(const char *host, ULONG *ip_address)
     static NX_DNS dns_resolve;
     UINT status;
 
-    status = nx_dns_create(&dns_resolve, &ip_0, (UCHAR *)"Resolver");
+    NX_IP *active_ip = app_netxduo_get_active_ip();
+    if (active_ip == NULL) return NX_NOT_ENABLED;
+    status = nx_dns_create(&dns_resolve, active_ip, (UCHAR *)"Resolver");
     if (status != NX_SUCCESS) return status;
 
     /* Add DNS servers from PPP IPCP negotiation (carrier-assigned) */
@@ -886,9 +905,9 @@ static UINT resolve_host(const char *host, ULONG *ip_address)
     if (!dns1 && !dns2) {
         nx_dns_server_add(&dns_resolve, IP_ADDRESS(8, 8, 8, 8));
         nx_dns_server_add(&dns_resolve, IP_ADDRESS(114, 114, 114, 114));
-        LOG_W(TAG_DNS, "No carrier DNS, using fallback 8.8.8.8 / 114.114.114.114");
+        elog_w(TAG_DNS, "No carrier DNS, using fallback 8.8.8.8 / 114.114.114.114");
     } else {
-        LOG_I(TAG_DNS, "DNS servers: %lu.%lu.%lu.%lu, %lu.%lu.%lu.%lu",
+        elog_d(TAG_DNS, "DNS servers: %lu.%lu.%lu.%lu, %lu.%lu.%lu.%lu",
               (dns1 >> 24) & 0xFF, (dns1 >> 16) & 0xFF,
               (dns1 >> 8)  & 0xFF,  dns1 & 0xFF,
               (dns2 >> 24) & 0xFF, (dns2 >> 16) & 0xFF,
@@ -897,9 +916,9 @@ static UINT resolve_host(const char *host, ULONG *ip_address)
 
     /* Log IP routing info for debugging */
     ULONG ip_addr = 0, mask = 0, gw = 0;
-    nx_ip_address_get(&ip_0, &ip_addr, &mask);
-    nx_ip_gateway_address_get(&ip_0, &gw);
-    LOG_D(TAG_DNS, "IP: %lu.%lu.%lu.%lu  GW: %lu.%lu.%lu.%lu",
+    nx_ip_address_get(active_ip, &ip_addr, &mask);
+    nx_ip_gateway_address_get(active_ip, &gw);
+    elog_d(TAG_DNS, "IP: %lu.%lu.%lu.%lu  GW: %lu.%lu.%lu.%lu",
           (ip_addr >> 24) & 0xFF, (ip_addr >> 16) & 0xFF,
           (ip_addr >> 8)  & 0xFF,  ip_addr & 0xFF,
           (gw >> 24) & 0xFF, (gw >> 16) & 0xFF,
@@ -908,7 +927,7 @@ static UINT resolve_host(const char *host, ULONG *ip_address)
     status = nx_dns_host_by_name_get(&dns_resolve, (UCHAR *)host,
                                       ip_address, 5 * NX_IP_PERIODIC_RATE);
     if (status != NX_SUCCESS) {
-        LOG_E(TAG_DNS, "DNS query failed: 0x%02X (host=%s)", status, host);
+        elog_e(TAG_DNS, "DNS query failed: 0x%02X (host=%s)", status, host);
     }
     nx_dns_delete(&dns_resolve);
     return status;
@@ -924,7 +943,7 @@ static void tcp_client_thread_entry(ULONG param)
     uint8_t rx_buf[CLIENT_RX_BUF_SIZE];
 
     /* Wait for PPP link-up */
-    LOG_I(TAG_TCP, "Waiting for PPP link-up...");
+    elog_d(TAG_TCP, "Waiting for PPP link-up...");
     tx_event_flags_get(&ppp_events, PPP_EVT_LINK_UP, TX_OR_CLEAR,
                        &actual_flags, TX_WAIT_FOREVER);
     tx_thread_sleep(1000);  /* Let routing settle */
@@ -940,29 +959,32 @@ static void tcp_client_thread_entry(ULONG param)
         for (dns_retries = 0; dns_retries < 5; dns_retries++) {
             status = resolve_host(TCP_SERVER_HOST, &server_ip);
             if (status == NX_SUCCESS) break;
-            LOG_W(TAG_TCP, "Resolve attempt %u failed: 0x%02X", dns_retries + 1, status);
+            elog_w(TAG_TCP, "Resolve attempt %u failed: 0x%02X", dns_retries + 1, status);
             tx_thread_sleep(2000 * (dns_retries + 1));
         }
     }
     if (status != NX_SUCCESS)
     {
-        LOG_E(TAG_TCP, "Resolve '%s' failed after 5 attempts: 0x%02X", TCP_SERVER_HOST, status);
+        elog_e(TAG_TCP, "Resolve '%s' failed after 5 attempts: 0x%02X", TCP_SERVER_HOST, status);
         return;
     }
 
-    LOG_I(TAG_TCP, "Server: %s = %lu.%lu.%lu.%lu:%d", TCP_SERVER_HOST,
+    elog_d(TAG_TCP, "Server: %s = %lu.%lu.%lu.%lu:%d", TCP_SERVER_HOST,
           (server_ip >> 24) & 0xFF, (server_ip >> 16) & 0xFF,
           (server_ip >> 8) & 0xFF, server_ip & 0xFF, TCP_SERVER_PORT);
 
     while (1)
     {
         /* Create TCP socket */
-        status = nx_tcp_socket_create(&ip_0, &socket, "TCP Client",
+        NX_IP *tcp_ip = app_netxduo_get_active_ip();
+        NX_PACKET_POOL *tcp_pool = app_netxduo_get_active_pool();
+        if (tcp_ip == NULL || tcp_pool == NULL) { tx_thread_sleep(CLIENT_SEND_PERIOD); continue; }
+        status = nx_tcp_socket_create(tcp_ip, &socket, "TCP Client",
                                       NX_IP_NORMAL, NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE, 2048,
                                       NX_NULL, NX_NULL);
         if (status != NX_SUCCESS)
         {
-            LOG_E(TAG_TCP, "Socket create failed: 0x%02X", status);
+            elog_e(TAG_TCP, "Socket create failed: 0x%02X", status);
             tx_thread_sleep(CLIENT_SEND_PERIOD);
             continue;
         }
@@ -970,7 +992,7 @@ static void tcp_client_thread_entry(ULONG param)
         status = nx_tcp_client_socket_bind(&socket, NX_ANY_PORT, NX_IP_PERIODIC_RATE);
         if (status != NX_SUCCESS)
         {
-            LOG_E(TAG_TCP, "Bind failed: 0x%02X", status);
+            elog_e(TAG_TCP, "Bind failed: 0x%02X", status);
             nx_tcp_socket_delete(&socket);
             tx_thread_sleep(CLIENT_SEND_PERIOD);
             continue;
@@ -980,41 +1002,41 @@ static void tcp_client_thread_entry(ULONG param)
                                               5 * NX_IP_PERIODIC_RATE);
         if (status != NX_SUCCESS)
         {
-            LOG_E(TAG_TCP, "Connect failed: 0x%02X", status);
+            elog_e(TAG_TCP, "Connect failed: 0x%02X", status);
             nx_tcp_client_socket_unbind(&socket);
             nx_tcp_socket_delete(&socket);
             tx_thread_sleep(CLIENT_SEND_PERIOD);
             continue;
         }
 
-        LOG_I(TAG_TCP, "Connected!");
+        elog_d(TAG_TCP, "Connected!");
 
         while (1)
         {
             /* Send data */
             const char *msg = "Hello from STM32 TCP\r\n";
-            status = nx_packet_allocate(&pool_0, &packet_ptr, NX_TCP_PACKET, NX_WAIT_FOREVER);
+            status = nx_packet_allocate(tcp_pool, &packet_ptr, NX_TCP_PACKET, NX_WAIT_FOREVER);
             if (status != NX_SUCCESS)
             {
-                LOG_E(TAG_TCP, "Packet alloc failed: 0x%02X", status);
+                elog_e(TAG_TCP, "Packet alloc failed: 0x%02X", status);
                 break;
             }
             status = nx_packet_data_append(packet_ptr, (void *)msg, strlen(msg),
-                                           &pool_0, NX_WAIT_FOREVER);
+                                           tcp_pool, NX_WAIT_FOREVER);
             if (status != NX_SUCCESS)
             {
-                LOG_E(TAG_TCP, "Packet append failed: 0x%02X", status);
+                elog_e(TAG_TCP, "Packet append failed: 0x%02X", status);
                 nx_packet_release(packet_ptr);
                 break;
             }
             status = nx_tcp_socket_send(&socket, packet_ptr, NX_IP_PERIODIC_RATE);
             if (status != NX_SUCCESS)
             {
-                LOG_E(TAG_TCP, "Send failed: 0x%02X", status);
+                elog_e(TAG_TCP, "Send failed: 0x%02X", status);
                 nx_packet_release(packet_ptr);
                 break;
             }
-            LOG_D(TAG_TCP, "TX: %s", msg);
+            elog_d(TAG_TCP, "TX: %s", msg);
 
             /* Receive response */
             status = nx_tcp_socket_receive(&socket, &packet_ptr, 2 * NX_IP_PERIODIC_RATE);
@@ -1024,7 +1046,7 @@ static void tcp_client_thread_entry(ULONG param)
                 if (len > CLIENT_RX_BUF_SIZE - 1) len = CLIENT_RX_BUF_SIZE - 1;
                 memcpy(rx_buf, packet_ptr->nx_packet_prepend_ptr, len);
                 rx_buf[len] = '\0';
-                LOG_I(TAG_TCP, "RX [%lu]: %s", len, rx_buf);
+                elog_d(TAG_TCP, "RX [%lu]: %s", len, rx_buf);
                 nx_packet_release(packet_ptr);
             }
             else if (status == NX_NO_PACKET)
@@ -1033,7 +1055,7 @@ static void tcp_client_thread_entry(ULONG param)
             }
             else
             {
-                LOG_W(TAG_TCP, "Receive error: 0x%02X", status);
+                elog_w(TAG_TCP, "Receive error: 0x%02X", status);
                 break;
             }
 
@@ -1044,7 +1066,7 @@ static void tcp_client_thread_entry(ULONG param)
         nx_tcp_socket_disconnect(&socket, NX_IP_PERIODIC_RATE);
         nx_tcp_client_socket_unbind(&socket);
         nx_tcp_socket_delete(&socket);
-        LOG_W(TAG_TCP, "Disconnected, reconnecting...");
+        elog_w(TAG_TCP, "Disconnected, reconnecting...");
         tx_thread_sleep(1000);
     }
 }
@@ -1059,7 +1081,7 @@ static void udp_client_thread_entry(ULONG param)
     uint8_t rx_buf[CLIENT_RX_BUF_SIZE];
 
     /* Wait for PPP link-up */
-    LOG_I(TAG_UDP, "Waiting for PPP link-up...");
+    elog_d(TAG_UDP, "Waiting for PPP link-up...");
     tx_event_flags_get(&ppp_events, PPP_EVT_LINK_UP, TX_OR_CLEAR,
                        &actual_flags, TX_WAIT_FOREVER);
     tx_thread_sleep(1500);  /* Let routing settle, stagger after TCP */
@@ -1075,33 +1097,36 @@ static void udp_client_thread_entry(ULONG param)
         for (dns_retries = 0; dns_retries < 5; dns_retries++) {
             status = resolve_host(UDP_SERVER_HOST, &server_ip);
             if (status == NX_SUCCESS) break;
-            LOG_W(TAG_UDP, "Resolve attempt %u failed: 0x%02X", dns_retries + 1, status);
+            elog_w(TAG_UDP, "Resolve attempt %u failed: 0x%02X", dns_retries + 1, status);
             tx_thread_sleep(2000 * (dns_retries + 1));
         }
     }
     if (status != NX_SUCCESS)
     {
-        LOG_E(TAG_UDP, "Resolve '%s' failed after 5 attempts: 0x%02X", UDP_SERVER_HOST, status);
+        elog_e(TAG_UDP, "Resolve '%s' failed after 5 attempts: 0x%02X", UDP_SERVER_HOST, status);
         return;
     }
 
-    LOG_I(TAG_UDP, "Server: %s = %lu.%lu.%lu.%lu:%d", UDP_SERVER_HOST,
+    elog_d(TAG_UDP, "Server: %s = %lu.%lu.%lu.%lu:%d", UDP_SERVER_HOST,
           (server_ip >> 24) & 0xFF, (server_ip >> 16) & 0xFF,
           (server_ip >> 8) & 0xFF, server_ip & 0xFF, UDP_SERVER_PORT);
 
     /* Create UDP socket */
-    status = nx_udp_socket_create(&ip_0, &socket, "UDP Client",
+    NX_IP *udp_ip = app_netxduo_get_active_ip();
+    NX_PACKET_POOL *udp_pool = app_netxduo_get_active_pool();
+    if (udp_ip == NULL || udp_pool == NULL) { return; }
+    status = nx_udp_socket_create(udp_ip, &socket, "UDP Client",
                                   NX_IP_NORMAL, NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE, 512);
     if (status != NX_SUCCESS)
     {
-        LOG_E(TAG_UDP, "Socket create failed: 0x%02X", status);
+        elog_e(TAG_UDP, "Socket create failed: 0x%02X", status);
         return;
     }
 
     status = nx_udp_socket_bind(&socket, NX_ANY_PORT, NX_IP_PERIODIC_RATE);
     if (status != NX_SUCCESS)
     {
-        LOG_E(TAG_UDP, "Bind failed: 0x%02X", status);
+        elog_e(TAG_UDP, "Bind failed: 0x%02X", status);
         nx_udp_socket_delete(&socket);
         return;
     }
@@ -1110,18 +1135,18 @@ static void udp_client_thread_entry(ULONG param)
     {
         /* Send data */
         const char *msg = "Hello from STM32 UDP\r\n";
-        status = nx_packet_allocate(&pool_0, &packet_ptr, NX_UDP_PACKET, NX_WAIT_FOREVER);
+        status = nx_packet_allocate(udp_pool, &packet_ptr, NX_UDP_PACKET, NX_WAIT_FOREVER);
         if (status != NX_SUCCESS)
         {
-            LOG_E(TAG_UDP, "Packet alloc failed: 0x%02X", status);
+            elog_e(TAG_UDP, "Packet alloc failed: 0x%02X", status);
             tx_thread_sleep(CLIENT_SEND_PERIOD);
             continue;
         }
         status = nx_packet_data_append(packet_ptr, (void *)msg, strlen(msg),
-                                       &pool_0, NX_WAIT_FOREVER);
+                                       udp_pool, NX_WAIT_FOREVER);
         if (status != NX_SUCCESS)
         {
-            LOG_E(TAG_UDP, "Packet append failed: 0x%02X", status);
+            elog_e(TAG_UDP, "Packet append failed: 0x%02X", status);
             nx_packet_release(packet_ptr);
             tx_thread_sleep(CLIENT_SEND_PERIOD);
             continue;
@@ -1129,12 +1154,12 @@ static void udp_client_thread_entry(ULONG param)
         status = nx_udp_socket_send(&socket, packet_ptr, server_ip, UDP_SERVER_PORT);
         if (status != NX_SUCCESS)
         {
-            LOG_E(TAG_UDP, "Send failed: 0x%02X", status);
+            elog_e(TAG_UDP, "Send failed: 0x%02X", status);
             nx_packet_release(packet_ptr);
         }
         else
         {
-            LOG_D(TAG_UDP, "TX: %s", msg);
+            elog_d(TAG_UDP, "TX: %s", msg);
         }
 
         /* Receive response */
@@ -1145,7 +1170,7 @@ static void udp_client_thread_entry(ULONG param)
             if (len > CLIENT_RX_BUF_SIZE - 1) len = CLIENT_RX_BUF_SIZE - 1;
             memcpy(rx_buf, packet_ptr->nx_packet_prepend_ptr, len);
             rx_buf[len] = '\0';
-            LOG_I(TAG_UDP, "RX [%lu]: %s", len, rx_buf);
+            elog_d(TAG_UDP, "RX [%lu]: %s", len, rx_buf);
             nx_packet_release(packet_ptr);
         }
         else if (status == NX_NO_PACKET)
@@ -1154,7 +1179,7 @@ static void udp_client_thread_entry(ULONG param)
         }
         else
         {
-            LOG_W(TAG_UDP, "Receive error: 0x%02X", status);
+            elog_w(TAG_UDP, "Receive error: 0x%02X", status);
         }
 
         tx_thread_sleep(CLIENT_SEND_PERIOD);

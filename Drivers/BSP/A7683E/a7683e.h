@@ -19,6 +19,20 @@ extern "C" {
 
 /* ---------- User Configuration ------------------------------------------- */
 
+/**
+ * Transport layer selection.
+ *   A7683E_TRANSPORT_UART — USART3 direct (default, current working path)
+ *   A7683E_TRANSPORT_CMUX — USART3 with CMUX multiplexing
+ *   A7683E_TRANSPORT_USB  — USB bulk endpoints (requires USB host enumeration)
+ */
+#define A7683E_TRANSPORT_UART   0
+#define A7683E_TRANSPORT_CMUX   1
+#define A7683E_TRANSPORT_USB    2
+
+#ifndef A7683E_TRANSPORT
+#define A7683E_TRANSPORT        A7683E_TRANSPORT_USB
+#endif
+
 /** APN for cellular data connection — change per carrier */
 #ifndef A7683E_APN
 #define A7683E_APN              "cmnet"
@@ -64,6 +78,7 @@ typedef UINT (*at_send_fn_t)(const char *cmd, char *resp, uint16_t resp_len, uin
  * @note   Must be called before a7683e_init()
  */
 void a7683e_set_serial(bsp_serial_t *serial);
+int  a7683e_is_serial_ready(void);
 
 /**
  * @brief  Power on the A7683E modem via PWR_EN pin toggle sequence

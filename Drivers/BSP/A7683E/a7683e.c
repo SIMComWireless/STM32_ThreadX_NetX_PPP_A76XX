@@ -113,12 +113,12 @@ static UINT wait_for_response(const char *keyword, char *buf, uint16_t buf_size,
         /* Check for error */
         if (strstr(buf, "ERROR"))
         {
-            LOG_E(TAG, "AT error: %s", buf);
+            elog_e(TAG, "AT error: %s", buf);
             return A7683E_ERROR;
         }
     }
 
-    LOG_W(TAG, "Timeout waiting for '%s', got: '%s'", keyword, buf);
+    elog_w(TAG, "Timeout waiting for '%s', got: '%s'", keyword, buf);
     return A7683E_TIMEOUT;
 }
 
@@ -127,6 +127,11 @@ static UINT wait_for_response(const char *keyword, char *buf, uint16_t buf_size,
 void a7683e_set_serial(bsp_serial_t *serial)
 {
     modem_serial = serial;
+}
+
+int a7683e_is_serial_ready(void)
+{
+    return (modem_serial != NULL);
 }
 
 /**
@@ -144,7 +149,7 @@ UINT a7683e_escape_cmux(void)
     /* Drain stale RX data and check first byte */
     flush_rx();
 
-    LOG_I(TAG, "Sending DISC to close all DLCIs...");
+    elog_d(TAG, "Sending DISC to close all DLCIs...");
 
     /* Send DISC (P/F=1) on DLCI 0, 1, 2 to request teardown.
      * Frame format: 7E | Addr | 0x53(DISCPF) | 0x01 | FCS | 7E
@@ -161,13 +166,12 @@ UINT a7683e_escape_cmux(void)
     for (uint8_t i = 0; i < 3; i++)
     {
         modem_serial->write(disc_frames[i], 6);
-        LOG_D(TAG, "DISC sent on DLCI %u", i);
+        elog_d(TAG, "DISC sent on DLCI %u", i);
     }
 
     /* Modem sends UA responses, then auto-reverts to AT mode.
      * SIMCom timeout is ~3s for SABM retries. */
-    LOG_I(TAG, "Waiting for modem to exit CMUX mode...");
-    flush_rx();
+    elog_d(TAG, "Waiting for modem to exit CMUX mode...");
     tx_thread_sleep(100);
 
     /* Verify we're back in AT mode */
@@ -177,11 +181,11 @@ UINT a7683e_escape_cmux(void)
     uint16_t n = modem_serial->read((uint8_t *)buf, sizeof(buf) - 1, 1000);
     if (n > 0 && strstr(buf, "OK"))
     {
-        LOG_I(TAG, "Modem back in AT mode");
+        elog_d(TAG, "Modem back in AT mode");
         return A7683E_OK;
     }
 
-    LOG_W(TAG, "Modem may still be transitioning, continuing...");
+    elog_w(TAG, "Modem may still be transitioning, continuing...");
     return A7683E_TIMEOUT;
 }
 
@@ -197,25 +201,25 @@ UINT a7683e_escape_ppp(void)
 {
     if (!modem_serial) return A7683E_ERROR;
 
-    LOG_I(TAG, "Escaping PPP mode (+++)...");
+    elog_d(TAG, "Escaping PPP mode (+++)...");
 
     /* +++ escape sequence per ITU-T V.250:
      * 1s silence → +++ → 1s silence → then commands */
     flush_rx();
     tx_thread_sleep(100);  /* Pre-guard: 1s silence before +++ (V.250) */
     modem_serial->write((const uint8_t *)"+++", 3);
-
+    tx_thread_sleep(2000);
     char esc_buf[64] = {0};
     uint16_t got = modem_serial->read((uint8_t *)esc_buf, sizeof(esc_buf) - 1, 1000);
     if (got > 0 && strstr(esc_buf, "OK"))
     {
-        LOG_I(TAG, "Modem was in PPP mode, hanging up...");
+        elog_d(TAG, "Modem was in PPP mode, hanging up...");
         a7683e_send_at("ATH", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
         tx_thread_sleep(100);
         return A7683E_OK;
     }
 
-    LOG_D(TAG, "Not in PPP mode (normal)");
+    elog_d(TAG, "Not in PPP mode (normal)");
     return A7683E_TIMEOUT;
 }
 
@@ -229,7 +233,7 @@ UINT a7683e_sync(void)
 {
     if (!modem_serial) return A7683E_ERROR;
 
-    LOG_I(TAG, "Syncing with modem...");
+    elog_d(TAG, "Syncing with modem...");
     for (int i = 0; i < 5; i++)
     {
         flush_rx();
@@ -237,20 +241,20 @@ UINT a7683e_sync(void)
         UINT status = wait_for_response("OK", resp_buf, sizeof(resp_buf), 1000);
         if (status == A7683E_OK)
         {
-            LOG_I(TAG, "Modem synced (attempt %d)", i + 1);
+            elog_d(TAG, "Modem synced (attempt %d)", i + 1);
             return A7683E_OK;
         }
-        LOG_D(TAG, "AT attempt %d failed, retrying...", i + 1);
+        elog_d(TAG, "AT attempt %d failed, retrying...", i + 1);
         tx_thread_sleep(200);
     }
 
-    LOG_E(TAG, "Modem not responding after 5 AT attempts");
+    elog_e(TAG, "Modem not responding after 5 AT attempts");
     return A7683E_ERROR;
 }
 
 void a7683e_power_on(void)
 {
-    LOG_I(TAG, "Powering on modem...");
+    elog_d(TAG, "Powering on modem...");
 
     HAL_GPIO_WritePin(MODEM_DTR_GPIO_Port, MODEM_DTR_Pin, GPIO_PIN_RESET);
 
@@ -261,25 +265,25 @@ void a7683e_power_on(void)
     HAL_GPIO_WritePin(MODEM_PWR_EN_GPIO_Port, MODEM_PWR_EN_Pin, GPIO_PIN_SET);
     tx_thread_sleep(500);
 
-    LOG_I(TAG, "Modem power-on sequence complete");
+    elog_d(TAG, "Modem power-on sequence complete");
 }
 
 void a7683e_power_off(void)
 {
-    LOG_I(TAG, "Powering off modem...");
+    elog_d(TAG, "Powering off modem...");
 
     HAL_GPIO_WritePin(MODEM_PWR_EN_GPIO_Port, MODEM_PWR_EN_Pin, GPIO_PIN_RESET);
     tx_thread_sleep(2000);
     HAL_GPIO_WritePin(MODEM_PWR_EN_GPIO_Port, MODEM_PWR_EN_Pin, GPIO_PIN_SET);
 
-    LOG_I(TAG, "Modem powered off");
+    elog_d(TAG, "Modem powered off");
 }
 
 UINT a7683e_send_at(const char *cmd, char *resp, uint16_t resp_len, uint32_t timeout_ms)
 {
     if (!modem_serial) return A7683E_ERROR;
 
-    LOG_D(TAG, "TX: %s", cmd);
+    elog_d(TAG, "TX: %s", cmd);
 
     flush_rx();
 
@@ -303,7 +307,7 @@ UINT a7683e_send_at(const char *cmd, char *resp, uint16_t resp_len, uint32_t tim
 
     if (status == A7683E_OK)
     {
-        LOG_D(TAG, "RX: %s", resp);
+        elog_d(TAG, "RX: %s", resp);
     }
 
     return status;
@@ -329,43 +333,65 @@ UINT a7683e_init(void)
 
     if (!modem_serial)
     {
-        LOG_E(TAG, "No serial port configured — call a7683e_set_serial() first");
+        elog_e(TAG, "No serial port configured — call a7683e_set_serial() first");
         return A7683E_ERROR;
     }
 
-    LOG_I(TAG, "=== A7683E Modem Initialization ===");
-    LOG_I(TAG, "Serial port: %s", modem_serial->name);
+    elog_d(TAG, "=== A7683E Modem Initialization ===");
+    elog_d(TAG, "Serial port: %s", modem_serial->name);
 
-    /* Step 0: Escape from CMUX/PPP if modem is in a stale state */
-    LOG_I(TAG, "[0/7] Checking for stale CMUX/PPP mode...");
+#if A7683E_TRANSPORT != A7683E_TRANSPORT_USB
+    /* Step 0: Escape from CMUX/PPP if modem is in a stale state (UART/CMUX only) */
+    elog_d(TAG, "[0/7] Checking for stale CMUX/PPP mode...");
     a7683e_escape_cmux();  /* Ignore return — TIMEOUT means not in CMUX */
     a7683e_escape_ppp();   /* Ignore return — TIMEOUT means not in PPP */
+#else
+    elog_d(TAG, "[0/7] USB mode — skip CMUX/PPP escape");
+#endif
 
     /* Step 1: Sync with modem (send AT up to 5 times) */
-    LOG_I(TAG, "[1/7] Syncing with modem...");
+    elog_d(TAG, "[1/7] Syncing with modem...");
     status = a7683e_sync();
     if (status != A7683E_OK)
     {
-        LOG_E(TAG, "Modem not responding");
+        elog_e(TAG, "Modem not responding");
         return A7683E_ERROR;
     }
 
     /* Step 2: Disable echo */
-    LOG_I(TAG, "[2/7] Disabling echo...");
+    elog_d(TAG, "[2/7] Disabling echo...");
     a7683e_send_at("ATE0", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
 
     /* Step 3: Check SIM status */
-    LOG_I(TAG, "[3/7] Checking SIM card...");
+    elog_d(TAG, "[3/7] Checking SIM card...");
     status = a7683e_send_at("AT+CPIN?", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
     if (status != A7683E_OK || strstr(resp_buf, "READY") == NULL)
     {
-        LOG_E(TAG, "SIM card not ready: %s", resp_buf);
+        elog_e(TAG, "SIM card not ready: %s", resp_buf);
         return A7683E_NO_SIM;
     }
-    LOG_I(TAG, "SIM card ready");
+    elog_d(TAG, "SIM card ready");
+
+    status = a7683e_send_at("AT$MYCONFIG?", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+    if (status == A7683E_OK && strstr(resp_buf, "OK"))
+    {
+        /* Response: $MYCONFIG: "usbnetmode",<mode>,<...>
+         * If mode==0, switch to ECM (1) */
+        char *p = strstr(resp_buf, "$MYCONFIG:");
+        if (p)
+        {
+            char *comma = strchr(p, ',');
+            if (comma && *(comma + 1) == '0')
+            {
+                elog_i(TAG, "usbnetmode=0, switching to ECM...");
+                a7683e_send_at("AT$MYCONFIG=\"usbnetmode\",1",
+                               resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+            }
+        }
+    }
 
     /* Step 4: Check signal quality */
-    LOG_I(TAG, "[4/7] Checking signal quality...");
+    elog_d(TAG, "[4/7] Checking signal quality...");
     status = a7683e_send_at("AT+CSQ", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
     if (status == A7683E_OK)
     {
@@ -374,7 +400,7 @@ UINT a7683e_init(void)
         if (p)
         {
             sscanf(p, "+CSQ: %d", &rssi);
-            LOG_I(TAG, "Signal RSSI: %d (%s)", rssi,
+            elog_d(TAG, "Signal RSSI: %d (%s)", rssi,
                   (rssi == 99) ? "Unknown" :
                   (rssi < 10) ? "Marginal" :
                   (rssi < 15) ? "OK" :
@@ -383,18 +409,18 @@ UINT a7683e_init(void)
     }
 
     /* Step 5: Set APN */
-    LOG_I(TAG, "[5/7] Setting APN: %s", A7683E_APN);
+    elog_d(TAG, "[5/7] Setting APN: %s", A7683E_APN);
     snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"%s\",\"%s\"", A7683E_PDP_TYPE, A7683E_APN);
     status = a7683e_send_at(cmd, resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
     if (status != A7683E_OK)
     {
-        LOG_E(TAG, "Failed to set APN");
+        elog_e(TAG, "Failed to set APN");
         return A7683E_ERROR;
     }
-    LOG_I(TAG, "APN set successfully");
+    elog_d(TAG, "APN set successfully");
 
     /* Step 6: Wait for network registration */
-    LOG_I(TAG, "[6/7] Waiting for network registration...");
+    elog_d(TAG, "[6/7] Waiting for network registration...");
     {
         int registered = 0;
         for (int retry = 0; retry < 120; retry++)  /* Max 120s */
@@ -413,12 +439,12 @@ UINT a7683e_init(void)
                     {
                         if (stat == 1 || stat == 5)
                         {
-                            LOG_I(TAG, "Network registered (%s)",
+                            elog_d(TAG, "Network registered (%s)",
                                   (stat == 1) ? "home" : "roaming");
                             registered = 1;
                             break;
                         }
-                        LOG_D(TAG, "Registration status: %d, waiting...", stat);
+                        elog_d(TAG, "Registration status: %d, waiting...", stat);
                     }
                 }
             }
@@ -427,12 +453,12 @@ UINT a7683e_init(void)
 
         if (!registered)
         {
-            LOG_E(TAG, "Network registration timeout");
+            elog_e(TAG, "Network registration timeout");
             return A7683E_ERROR;
         }
     }
 
-    LOG_I(TAG, "=== Modem initialization complete ===");
+    elog_d(TAG, "=== Modem initialization complete ===");
     return A7683E_OK;
 }
 
@@ -448,7 +474,7 @@ UINT a7683e_pre_dial(at_send_fn_t send_at)
     UINT status;
     char resp[256];
 
-    LOG_I(TAG, "=== Pre-dial queries ===");
+    elog_d(TAG, "=== Pre-dial queries ===");
 
     /* ---- Check PDP context activation status ---- */
     status = send_at("AT+CGACT?", resp, sizeof(resp), A7683E_DEFAULT_TIMEOUT);
@@ -456,18 +482,18 @@ UINT a7683e_pre_dial(at_send_fn_t send_at)
     {
         if (strstr(resp, "+CGACT: 1,1") == NULL)
         {
-            LOG_I(TAG, "Activating PDP context 1...");
+            elog_d(TAG, "Activating PDP context 1...");
             status = send_at("AT+CGACT=1,1", resp, sizeof(resp), 15000);
             if (status != A7683E_OK)
             {
-                LOG_E(TAG, "PDP context activation failed!");
+                elog_e(TAG, "PDP context activation failed!");
                 return A7683E_PPP_FAIL;
             }
-            LOG_I(TAG, "PDP context 1 activated");
+            elog_d(TAG, "PDP context 1 activated");
         }
         else
         {
-            LOG_I(TAG, "PDP context 1 already active");
+            elog_d(TAG, "PDP context 1 already active");
         }
     }
 
@@ -475,7 +501,7 @@ UINT a7683e_pre_dial(at_send_fn_t send_at)
     status = send_at("AT+CGPADDR=1", resp, sizeof(resp), A7683E_DEFAULT_TIMEOUT);
     if (status == A7683E_OK)
     {
-        LOG_I(TAG, "PDP address: %s", resp);
+        elog_d(TAG, "PDP address: %s", resp);
     }
 
     return A7683E_OK;
@@ -489,12 +515,12 @@ UINT a7683e_pre_dial(at_send_fn_t send_at)
  */
 UINT a7683e_ppp_dial(void)
 {   
-    LOG_I(TAG, "=== PPP Dial ===");
+    elog_d(TAG, "=== PPP Dial ===");
     if (!modem_serial) return A7683E_ERROR;
 
     char resp[256];
 
-    LOG_I(TAG, "Dialing PPP (ATD*99***1#)...");
+    elog_d(TAG, "Dialing PPP (ATD*99***1#)...");
     flush_rx();
     modem_serial->write((const uint8_t *)"ATD*99***1#\r", 12);
 
@@ -502,13 +528,13 @@ UINT a7683e_ppp_dial(void)
 
     if (status == A7683E_OK)
     {
-        LOG_I(TAG, "PPP CONNECT received — modem is now in data mode");
+        elog_d(TAG, "PPP CONNECT received — modem is now in data mode");
         tx_thread_sleep(100);
         flush_rx();
         return A7683E_OK;
     }
    
-    LOG_E(TAG, "PPP dial failed — no CONNECT received");
+    elog_e(TAG, "PPP dial failed — no CONNECT received");
     return A7683E_PPP_FAIL;
 }
 
@@ -554,7 +580,7 @@ UINT a7683e_cmux_start(void)
 
     if (!modem_serial) return A7683E_ERROR;
 
-    LOG_I(TAG, "=== Starting CMUX mode ===");
+    elog_d(TAG, "=== Starting CMUX mode ===");
 
     /* Initialize CMUX */
     cmux_init(&g_cmux);
@@ -587,17 +613,17 @@ UINT a7683e_cmux_start(void)
 
             if (strstr(cmux_resp, "OK")) {
                 ok_found = 1;
-                LOG_I(TAG, "AT+CMUX=0 accepted — entering CMUX mode");
+                elog_d(TAG, "AT+CMUX=0 accepted — entering CMUX mode");
                 break;
             }
             if (strstr(cmux_resp, "ERROR")) {
-                LOG_E(TAG, "AT+CMUX=0 failed: %s", cmux_resp);
+                elog_e(TAG, "AT+CMUX=0 failed: %s", cmux_resp);
                 return A7683E_ERROR;
             }
         }
 
         if (!ok_found) {
-            LOG_E(TAG, "AT+CMUX=0 timeout");
+            elog_e(TAG, "AT+CMUX=0 timeout");
             return A7683E_ERROR;
         }
 
@@ -611,11 +637,11 @@ UINT a7683e_cmux_start(void)
     /* Start CMUX: SABM on DLCI 0 (if not already open), 1, 2 */
     int ret = cmux_start(&g_cmux);
     if (ret != 0) {
-        LOG_E(TAG, "CMUX start failed: %d", ret);
+        elog_e(TAG, "CMUX start failed: %d", ret);
         return A7683E_ERROR;
     }
 
-    LOG_I(TAG, "CMUX mode active — DLCI 0(ctrl) 1(AT) 2(PPP)");
+    elog_d(TAG, "CMUX mode active — DLCI 0(ctrl) 1(AT) 2(PPP)");
     return A7683E_OK;
 }
 
@@ -653,7 +679,7 @@ UINT a7683e_cmux_send_at_dlci(uint8_t dlci, const char *cmd, char *resp,
     /* Send via specified CMUX DLCI */
     cmux_send(&g_cmux, dlci, (const uint8_t *)buf, len);
 
-    LOG_D(TAG, "CMUX TX [DLCI %u]: %s", dlci, cmd);
+    elog_d(TAG, "CMUX TX [DLCI %u]: %s", dlci, cmd);
 
     /* Wait for response */
     uint32_t elapsed = 0;
@@ -668,7 +694,7 @@ UINT a7683e_cmux_send_at_dlci(uint8_t dlci, const char *cmd, char *resp,
         if (copy_len > resp_len - 1) copy_len = resp_len - 1;
         memcpy(resp, cmux_at_buf, copy_len);
         resp[copy_len] = '\0';
-        LOG_D(TAG, "CMUX RX: %s", resp);
+        elog_d(TAG, "CMUX RX: %s", resp);
         return A7683E_OK;
     }
 

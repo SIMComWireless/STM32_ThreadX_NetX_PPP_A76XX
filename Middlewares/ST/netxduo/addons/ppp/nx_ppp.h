@@ -71,7 +71,7 @@ extern   "C" {
 */
 
 /* If defined, this enables PPP event logging.
-#define NX_PPP_DEBUG_LOG_ENABLE
+#define NX_PPP_DEBUG_log_eNABLE
 */
 
 /* If defined, this enables data saved to the PPP log to be printed out (printf).
@@ -587,7 +587,7 @@ typedef struct NX_PPP_STRUCT
     UCHAR           nx_ppp_peer_naked_list[NX_PPP_OPTION_MESSAGE_LENGTH]; 
     UCHAR           nx_ppp_rejected_list[NX_PPP_OPTION_MESSAGE_LENGTH];
 
-#ifdef NX_PPP_DEBUG_LOG_ENABLE
+#ifdef NX_PPP_DEBUG_log_eNABLE
     NX_PPP_DEBUG_ENTRY
                     nx_ppp_debug_log[NX_PPP_DEBUG_LOG_SIZE];
     UINT            nx_ppp_debug_log_oldest_index;

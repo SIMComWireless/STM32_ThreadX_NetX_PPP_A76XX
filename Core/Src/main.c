@@ -119,7 +119,10 @@ int main(void)
   MX_LPUART1_UART_Init();
   MX_RNG_Init();
   MX_RTC_Init();
-  MX_USB_OTG_FS_USB_Init();
+  /* NOTE: MX_USB_OTG_FS_USB_Init() is NOT called here.
+   * USB OTG FS is initialized later by the USBX host thread
+   * (usbx_app_thread_entry → MX_USB_Host_Init → MX_USB_OTG_FS_USB_Init).
+   * Calling it twice would corrupt the HCD state and freeze the system. */
   /* USER CODE BEGIN 2 */
   MX_USART3_UART_Init();
   /* USER CODE END 2 */
@@ -243,9 +246,10 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
+  //__disable_irq();
   while (1)
   {
+    printf("Error_Handler\r\n");
   }
   /* USER CODE END Error_Handler_Debug */
 }

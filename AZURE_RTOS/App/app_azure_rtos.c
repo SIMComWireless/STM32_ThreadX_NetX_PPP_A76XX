@@ -61,6 +61,11 @@ static TX_BYTE_POOL tx_app_byte_pool;
 __ALIGN_BEGIN static UCHAR nx_byte_pool_buffer[NX_APP_MEM_POOL_SIZE] __ALIGN_END;
 static TX_BYTE_POOL nx_app_byte_pool;
 
+/* USER CODE BEGIN UX_HOST_Pool_Buffer */
+/* USER CODE END UX_HOST_Pool_Buffer */
+static UCHAR  ux_host_byte_pool_buffer[UX_HOST_APP_MEM_POOL_SIZE];
+static TX_BYTE_POOL ux_host_app_byte_pool;
+
 #endif
 
 /* USER CODE BEGIN PV */
@@ -141,9 +146,34 @@ VOID tx_application_define(VOID *first_unused_memory)
     /* USER CODE BEGIN MX_NetXDuo_Init_Success */
 
     /* USER CODE END MX_NetXDuo_Init_Success */
-
   }
+  if (tx_byte_pool_create(&ux_host_app_byte_pool, "Ux App memory pool", ux_host_byte_pool_buffer, UX_HOST_APP_MEM_POOL_SIZE) != TX_SUCCESS)
+  {
+    /* USER CODE BEGIN TX_Byte_Pool_Error */
+    printf("ux_tx_byte_pool_create fail\r\n");
+    /* Do NOT call Error_Handler — let other tasks continue */
+    /* USER CODE END TX_Byte_Pool_Error */
+  }
+  else
+  {
+    /* USER CODE BEGIN UX_HOST_Byte_Pool_Success */
 
+    /* USER CODE END UX_HOST_Byte_Pool_Success */
+
+    memory_ptr = (VOID *)&ux_host_app_byte_pool;
+
+    if (MX_USBX_Host_Init(memory_ptr) != UX_SUCCESS)
+    {
+      /* USER CODE BEGIN MX_USBX_Host_Init_Error */
+      printf("MX_USBX_Host_Init fail — USB Host disabled, other tasks continue\r\n");
+      /* Do NOT call Error_Handler — let other tasks continue */
+      /* USER CODE END MX_USBX_Host_Init_Error */
+    }
+
+    /* USER CODE BEGIN MX_USBX_Host_Init_Success */
+
+    /* USER CODE END MX_USBX_Host_Init_Success */
+  }
 #else
   /*
    * Using dynamic memory allocation requires to apply some changes to the linker file.

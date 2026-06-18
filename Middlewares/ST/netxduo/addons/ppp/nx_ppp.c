@@ -434,7 +434,7 @@ ULONG       count;
             if (packet_ptr)
             {
 
-#ifdef NX_PPP_DEBUG_LOG_ENABLE
+#ifdef NX_PPP_DEBUG_log_eNABLE
 
                 /* Insert an entry into the PPP frame debug log.  */
                 _nx_ppp_debug_log_capture(ppp_ptr, 'R', packet_ptr);
@@ -477,7 +477,7 @@ ULONG       count;
                 /* Restore interrupts.  */
                 TX_RESTORE
 
-#ifdef NX_PPP_DEBUG_LOG_ENABLE
+#ifdef NX_PPP_DEBUG_log_eNABLE
 
                 /* Insert an entry into the PPP frame debug log.  */
                 _nx_ppp_debug_log_capture(ppp_ptr, 'R', packet_ptr);
@@ -7665,7 +7665,7 @@ UINT        release_packet = NX_TRUE;
 #endif /* NX_PPP_PPPOE_ENABLE  */
 
 
-#ifdef NX_PPP_DEBUG_LOG_ENABLE
+#ifdef NX_PPP_DEBUG_log_eNABLE
 
     /* Place the outgoing frame into the optional PPP debug log.  */
     _nx_ppp_debug_log_capture(ppp_ptr, 'S', packet_ptr);
@@ -8077,7 +8077,7 @@ UCHAR       control = 0x03;
 }
 
 
-#ifdef NX_PPP_DEBUG_LOG_ENABLE
+#ifdef NX_PPP_DEBUG_log_eNABLE
 /**************************************************************************/ 
 /*                                                                        */ 
 /*  FUNCTION                                               RELEASE        */ 
@@ -8291,7 +8291,7 @@ void  _nx_ppp_debug_log_capture_protocol(NX_PPP *ppp_ptr)
 
     printf("\n");
 }
-#endif /* NX_PPP_DEBUG_LOG_ENABLE */
+#endif /* NX_PPP_DEBUG_log_eNABLE */
 
 
 #ifndef NX_PPP_DISABLE_CHAP

@@ -76,6 +76,7 @@ UINT app_netxduo_create_ppp(void);
  */
 UINT app_netxduo_start_ppp(void);
 
+
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

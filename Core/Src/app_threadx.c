@@ -28,9 +28,18 @@
 #include "bsp_serial.h"
 #include "bsp_uart3.h"
 #include "a7683e.h"
+#if A7683E_TRANSPORT == A7683E_TRANSPORT_USB
+#include "bsp_usb.h"
+#endif
 #include "app_netxduo.h"
 #include "cmux.h"
 #include "cmux_serial.h"
+
+/* ECM event flags — defined in app_usbx_host.h, forward-declared here
+ * to avoid cross-module header dependency */
+#define ECM_LINK_UP_EVT         0x04
+#define ECM_DEVICE_CONNECTED    0x08
+extern TX_EVENT_FLAGS_GROUP ux_app_EventFlag;
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,11 +58,11 @@
 #endif
 
 /* Main app thread — heartbeat LED + modem management */
-#define APP_THREAD_PRIO         10
+#define APP_THREAD_PRIO         20
 #define APP_THREAD_STACK_SIZE   512
 
 /* Modem init thread — runs AT init sequence then PPP dial */
-#define MODEM_THREAD_PRIO       12
+#define MODEM_THREAD_PRIO       10
 #define MODEM_THREAD_STACK_SIZE 1024*2
 
 /* USER CODE END PD */
@@ -76,6 +85,14 @@ static uint8_t modem_stack[MODEM_THREAD_STACK_SIZE];
 /* USER CODE BEGIN PFP */
 
 static void modem_thread_entry(ULONG param);
+extern void elog_entry(ULONG param);
+
+/* Elog async output thread — low priority background task.
+ * Higher prio number = lower priority in ThreadX. */
+#define ELOG_THREAD_PRIO        11
+#define ELOG_THREAD_STACK_SIZE  1024
+static TX_THREAD elog_thread;
+static uint8_t elog_stack[ELOG_THREAD_STACK_SIZE];
 
 /* USER CODE END PFP */
 
@@ -122,28 +139,70 @@ void tx_app_thread_entry(ULONG thread_input)
 {
   /* USER CODE BEGIN tx_app_thread_entry */
 
-  /* Initialize EasyLogger */
-  elog_init();
-  elog_start();
+  /* Initialize EasyLogger (creates semaphores, ring buffer) */
+  if (elog_init() == ELOG_NO_ERR) {
+      elog_set_fmt(ELOG_LVL_ASSERT, ELOG_FMT_ALL);
+      elog_set_fmt(ELOG_LVL_ERROR, ELOG_FMT_LVL | ELOG_FMT_TAG | ELOG_FMT_TIME);
+      elog_set_fmt(ELOG_LVL_WARN, ELOG_FMT_LVL | ELOG_FMT_TAG | ELOG_FMT_TIME);
+      elog_set_fmt(ELOG_LVL_INFO, ELOG_FMT_LVL | ELOG_FMT_TAG | ELOG_FMT_TIME);
+      elog_set_fmt(ELOG_LVL_DEBUG, ELOG_FMT_ALL & ~ELOG_FMT_FUNC);
+      elog_set_fmt(ELOG_LVL_VERBOSE, ELOG_FMT_ALL & ~ELOG_FMT_FUNC);
+  #ifdef ELOG_COLOR_ENABLE
+      elog_set_text_color_enabled(true);
+  #endif
+      elog_start();
+  }
+  else {
+      /* elog not available — halt */
+      extern UART_HandleTypeDef hlpuart1;
+      const char msg[] = "elog_init failed!\r\n";
+      HAL_UART_Transmit(&hlpuart1, (uint8_t *)msg, sizeof(msg) - 1, 100);
+      while (1);
+  }
 
-  LOG_I(TAG, "========================================");
-  LOG_I(TAG, "  A7683E PPP + NTP Time Sync");
-  LOG_I(TAG, "========================================");
-  LOG_I(TAG, "MCU: STM32L4R5ZIT6 @ 120MHz");
-  LOG_I(TAG, "RTOS: ThreadX");
-  LOG_I(TAG, "Modem: SIMCom A7683E on USART3");
-  LOG_I(TAG, "APN: %s", A7683E_APN);
-  LOG_I(TAG, "NTP: %s", NTP_SERVER_HOST);
-  LOG_I(TAG, "========================================");
+  /* Create elog async output thread (after elog_init so semaphores exist) */
+  if (tx_thread_create(&elog_thread, "elog async", elog_entry, 0,
+                       elog_stack, ELOG_THREAD_STACK_SIZE,
+                       ELOG_THREAD_PRIO, ELOG_THREAD_PRIO,
+                       TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
+  {
+      elog_e(TAG, "Failed to create elog async thread");
+      while (1);
+  }
 
-  /* Initialize UART3 serial port (DMA double-buffer) */
+  elog_d(TAG, "========================================");
+  elog_d(TAG, "  A7683E PPP + NTP Time Sync");
+  elog_d(TAG, "========================================");
+  elog_d(TAG, "MCU: STM32L4R5ZIT6 @ 120MHz");
+  elog_d(TAG, "RTOS: ThreadX");
+  elog_d(TAG, "Modem: SIMCom A7683E");
+  elog_d(TAG, "Transport: %s",
+         A7683E_TRANSPORT == A7683E_TRANSPORT_UART ? "UART3" :
+         A7683E_TRANSPORT == A7683E_TRANSPORT_CMUX ? "CMUX" : "USB");
+  elog_d(TAG, "APN: %s", A7683E_APN);
+  elog_d(TAG, "NTP: %s", NTP_SERVER_HOST);
+  elog_d(TAG, "========================================");
+
+#if A7683E_TRANSPORT == A7683E_TRANSPORT_UART
+  /* --- UART3 direct mode --- */
   bsp_serial_uart3->init();
-  LOG_I(TAG, "Serial port '%s' initialized (DMA double-buffer, idle-line ISR)",
-        bsp_serial_uart3->name);
-
-  /* Wire serial port to modem driver and NetX PPP */
+  elog_d(TAG, "Serial port '%s' initialized", bsp_serial_uart3->name);
   a7683e_set_serial(bsp_serial_uart3);
   app_netxduo_set_serial(bsp_serial_uart3);
+
+#elif A7683E_TRANSPORT == A7683E_TRANSPORT_CMUX
+  /* --- CMUX mode (UART3 + multiplexing) --- */
+  bsp_serial_uart3->init();
+  elog_d(TAG, "Serial port '%s' initialized (CMUX mode)", bsp_serial_uart3->name);
+  a7683e_set_serial(bsp_serial_uart3);
+  app_netxduo_set_serial(bsp_serial_uart3);
+
+#elif A7683E_TRANSPORT == A7683E_TRANSPORT_USB
+  /* --- USB mode — deferred: serial wired after USB enumeration --- */
+  elog_d(TAG, "USB transport selected — waiting for modem enumeration...");
+  /* a7683e_set_serial() will be called from USB event callback after
+   * the modem is identified and bsp_usb_get() returns a valid port. */
+#endif
 
   /* Create modem initialization thread */
   if (tx_thread_create(&modem_thread, "Modem Init",
@@ -152,7 +211,7 @@ void tx_app_thread_entry(ULONG thread_input)
                        MODEM_THREAD_PRIO, MODEM_THREAD_PRIO,
                        TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
   {
-    LOG_E(TAG, "Failed to create modem thread");
+    elog_e(TAG, "Failed to create modem thread");
   }
 
   /* Main heartbeat loop */
@@ -178,106 +237,112 @@ static void modem_fatal(void)
 }
 
 /**
-  * @brief  Modem initialization and PPP dial thread
-  * @note   Runs at priority 12 (higher than app thread)
+  * @brief  PPP fallback — existing dial flow
+  */
+static UINT try_ppp_mode(void)
+{
+  UINT status;
+
+  elog_d(TAG, "Falling back to PPP mode...");
+
+#if CMUX_ENABLE
+  status = a7683e_cmux_start();
+  if (status == A7683E_OK)
+  {
+    status = a7683e_pre_dial(a7683e_cmux_send_at_dlci2);
+    if (status == A7683E_OK)
+    {
+      char cmux_resp[32];
+      status = a7683e_cmux_send_at_dlci(2, "ATD*99***1#", cmux_resp, sizeof(cmux_resp), 30000);
+      if (status == A7683E_OK && strstr(cmux_resp, "CONNECT") != NULL)
+      {
+        elog_d(TAG, "PPP CONNECT via CMUX");
+        cmux_serial_init_all();
+        app_netxduo_set_serial(cmux_serial_get(CMUX_PPP_DLCI));
+        goto ppp_start;
+      }
+    }
+    cmux_stop(&g_cmux);
+    cmux_bridge_stop();
+    a7683e_sync();
+  }
+#endif
+
+  /* Direct UART PPP */
+  status = a7683e_pre_dial(a7683e_send_at);
+  if (status != A7683E_OK)
+  {
+    elog_e(TAG, "Pre-dial failed: 0x%02X", status);
+    return status;
+  }
+
+  status = a7683e_ppp_dial();
+  if (status != A7683E_OK)
+  {
+    elog_e(TAG, "PPP dial failed: 0x%02X", status);
+    return status;
+  }
+
+ppp_start:
+  status = app_netxduo_create_ppp();
+  if (status != NX_SUCCESS)
+  {
+    elog_e(TAG, "PPP create failed: 0x%02X", status);
+    return status;
+  }
+
+  status = app_netxduo_start_ppp();
+  if (status != NX_SUCCESS)
+  {
+    elog_e(TAG, "PPP start failed: 0x%02X", status);
+    return status;
+  }
+
+  return NX_SUCCESS;
+}
+
+/**
+  * @brief  Modem initialization thread
+  * @note   ECM-first strategy with PPP fallback
   *
   * Flow:
-  *   1. Power on modem, init (direct UART)
-  *   2. [CMUX] Start CMUX → pre_dial → dial → switch PPP to CMUX virtual serial
-  *   3. [Direct] pre_dial → dial → PPP uses UART3 directly
-  *   4. Create PPP instance, start PPP negotiation
+  *   1. AT init (sync, SIM, APN, network registration)
+  *   2. Try ECM mode: AT+CUSB=1 → wait for USB ECM link-up
+  *   3. If ECM fails → fallback to PPP (dial → PPP negotiation)
   */
 static void modem_thread_entry(ULONG param)
 {
   (void)param;
   UINT status;
 
-  LOG_I(TAG, "Modem thread started");
+  elog_d(TAG, "Modem thread started");
 
-  /* Step 1: Power on modem */
+#if A7683E_TRANSPORT == A7683E_TRANSPORT_USB
+  /* USB mode: wait for enumeration and serial port wiring */
+  elog_d(TAG, "Waiting for USB serial port...");
+  while (!a7683e_is_serial_ready())
+    tx_thread_sleep(100);
+  elog_d(TAG, "USB serial port ready");
+#endif
+
   //a7683e_power_on();
-
-  /* Step 2: Init — always via direct UART (CMUX not active yet) */
   status = a7683e_init();
   if (status != A7683E_OK)
   {
-    LOG_E(TAG, "Modem init failed: 0x%02X", status);
+    elog_e(TAG, "Modem init failed: 0x%02X", status);
     modem_fatal();
   }
-
-#if CMUX_ENABLE
-  /* Step 3: Try CMUX mode */
-  status = a7683e_cmux_start();
-  if (status == A7683E_OK)
-  {
-    /* Pre-dial queries via CMUX DLCI 2 */
-    status = a7683e_pre_dial(a7683e_cmux_send_at_dlci2);
-    if (status != A7683E_OK)
-    {
-      LOG_E(TAG, "Pre-dial failed via CMUX: 0x%02X", status);
-      goto cmux_fail;
-    }
-
-    /* PPP dial via CMUX DLCI 2 — ATD must be on same DLCI as PPP data */
-    char cmux_resp[32];
-    status = a7683e_cmux_send_at_dlci(2, "ATD*99***1#", cmux_resp, sizeof(cmux_resp), 30000);
-    if (status == A7683E_OK && strstr(cmux_resp, "CONNECT") != NULL)
-    {
-      LOG_I(TAG, "PPP CONNECT via CMUX — DLCI 2 is now PPP data channel");
-      /* Initialize CMUX virtual serial ports and switch PPP to DLCI 2 */
-      cmux_serial_init_all();
-      app_netxduo_set_serial(cmux_serial_get(CMUX_PPP_DLCI));
-      goto ppp_create;
-    }
-
-    LOG_E(TAG, "PPP dial via CMUX failed");
-cmux_fail:
-    cmux_stop(&g_cmux);
-    cmux_bridge_stop();
-    a7683e_sync();
-    LOG_I(TAG, "Falling back to direct UART mode");
-  }
-  else
-  {
-    LOG_E(TAG, "CMUX start failed: 0x%02X — using direct mode", status);
-  }
-#endif /* CMUX_ENABLE */
-
-  /* Direct UART mode: pre-dial + PPP dial */
-  status = a7683e_pre_dial(a7683e_send_at);
-  if (status != A7683E_OK)
-  {
-    LOG_E(TAG, "Pre-dial failed: 0x%02X", status);
-    modem_fatal();
-  }
-
-  status = a7683e_ppp_dial();
-  if (status != A7683E_OK)
-  {
-    LOG_E(TAG, "PPP dial failed: 0x%02X", status);
-    modem_fatal();
-  }
-  LOG_I(TAG, "Modem in PPP data mode (direct UART)");
-
-ppp_create:
-  /* Step 4: Create PPP instance (must be in thread context) */
-
-  status = app_netxduo_create_ppp();
+  
+  elog_w(TAG, "ECM unavailable, falling back to PPP");
+  status = try_ppp_mode();
   if (status != NX_SUCCESS)
   {
-    LOG_E(TAG, "PPP create failed: 0x%02X", status);
+    elog_e(TAG, "PPP fallback also failed: 0x%02X", status);
     modem_fatal();
   }
 
-  /* Step 5: Start PPP negotiation */
-  status = app_netxduo_start_ppp();
-  if (status != NX_SUCCESS)
-  {
-    LOG_E(TAG, "PPP start failed: 0x%02X", status);
-    modem_fatal();
-  }
-
-  /* Thread exits — PPP read thread and NTP thread handle the rest */
+  elog_i(TAG, "Using PPP mode (UART3)");
+  /* PPP read thread and NTP thread handle the rest */
 }
 
 /**

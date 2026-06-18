@@ -167,8 +167,8 @@ static void cmux_frame_send(cmux_t *ctx, uint8_t dlci, uint8_t ctrl,
 
     ctx->tx_frames++;
 
-    LOG_I(TAG, "TX [%u] DLCI=%u %s:", pos, dlci, frame_name(ctrl & ~0x10));
-    //elog_hexdump(TAG, buf, pos);
+    elog_d(TAG, "TX [%u] DLCI=%u %s:", pos, dlci, frame_name(ctrl & ~0x10));
+    //elog_hexdump(TAG, 16, buf, pos);
 }
 
 /* ---------- Process received frame --------------------------------------- */
@@ -178,7 +178,7 @@ static void cmux_process_frame(cmux_t *ctx, cmux_frame_t *frame)
     uint8_t dlci = get_dlci(frame->address);
     uint8_t ctrl = frame->control & ~0x10;  /* Mask P/F bit */
 
-    LOG_D(TAG, "RX DLCI=%u %s len=%u", dlci, frame_name(ctrl), frame->length);
+    elog_d(TAG, "RX DLCI=%u %s len=%u", dlci, frame_name(ctrl), frame->length);
 
     switch (ctrl) {
     case CMUX_SABM:
@@ -188,7 +188,7 @@ static void cmux_process_frame(cmux_t *ctx, cmux_frame_t *frame)
             ctx->channels[dlci].dlci = dlci;
         }
         cmux_frame_send(ctx, dlci, CMUX_UA, NULL, 0, 0);
-        LOG_I(TAG, "DLCI %u opened (SABM received, UA sent)", dlci);
+        elog_d(TAG, "DLCI %u opened (SABM received, UA sent)", dlci);
         break;
 
     case CMUX_UA:
@@ -196,10 +196,10 @@ static void cmux_process_frame(cmux_t *ctx, cmux_frame_t *frame)
         if (dlci < CMUX_MAX_DLCI) {
             if (ctx->channels[dlci].state == CMUX_CH_SABM_SENT) {
                 ctx->channels[dlci].state = CMUX_CH_OPEN;
-                LOG_I(TAG, "DLCI %u opened (UA received)", dlci);
+                elog_d(TAG, "DLCI %u opened (UA received)", dlci);
             } else if (ctx->channels[dlci].state == CMUX_CH_DISC_SENT) {
                 ctx->channels[dlci].state = CMUX_CH_CLOSED;
-                LOG_I(TAG, "DLCI %u closed (UA received)", dlci);
+                elog_d(TAG, "DLCI %u closed (UA received)", dlci);
             }
         }
         break;
@@ -208,7 +208,7 @@ static void cmux_process_frame(cmux_t *ctx, cmux_frame_t *frame)
         /* Peer refuses channel */
         if (dlci < CMUX_MAX_DLCI) {
             ctx->channels[dlci].state = CMUX_CH_CLOSED;
-            LOG_W(TAG, "DLCI %u refused (DM received)", dlci);
+            elog_w(TAG, "DLCI %u refused (DM received)", dlci);
         }
         break;
 
@@ -217,7 +217,7 @@ static void cmux_process_frame(cmux_t *ctx, cmux_frame_t *frame)
         if (dlci < CMUX_MAX_DLCI)
             ctx->channels[dlci].state = CMUX_CH_CLOSED;
         cmux_frame_send(ctx, dlci, CMUX_UA, NULL, 0, 0);
-        LOG_I(TAG, "DLCI %u closed (DISC received, UA sent)", dlci);
+        elog_d(TAG, "DLCI %u closed (DISC received, UA sent)", dlci);
         break;
 
     case CMUX_UIH:
@@ -226,12 +226,12 @@ static void cmux_process_frame(cmux_t *ctx, cmux_frame_t *frame)
             if (frame->length >= 2) {
                 uint8_t cmd = frame->data[0];
                 if (cmd == CMUX_CMD_CLD) {
-                    LOG_I(TAG, "Modem requests CMUX close-down");
+                    elog_d(TAG, "Modem requests CMUX close-down");
                     ctx->active = 0;
                 } else if (cmd == CMUX_CMD_MSC && frame->length >= 3) {
-                    LOG_D(TAG, "MSC on DLCI %u", frame->data[2] >> 2);
+                    elog_d(TAG, "MSC on DLCI %u", frame->data[2] >> 2);
                 } else {
-                    LOG_D(TAG, "Control cmd 0x%02X len=%u", cmd, frame->data[1] >> 1);
+                    elog_d(TAG, "Control cmd 0x%02X len=%u", cmd, frame->data[1] >> 1);
                 }
             }
         } else if (dlci < CMUX_MAX_DLCI && ctx->channels[dlci].rx_callback) {
@@ -241,7 +241,7 @@ static void cmux_process_frame(cmux_t *ctx, cmux_frame_t *frame)
         break;
 
     default:
-        LOG_W(TAG, "Unknown frame type 0x%02X on DLCI %u", ctrl, dlci);
+        elog_w(TAG, "Unknown frame type 0x%02X on DLCI %u", ctrl, dlci);
         break;
     }
 }
@@ -252,8 +252,8 @@ void cmux_feed(cmux_t *ctx, const uint8_t *data, uint16_t len)
 {
     /* elog_hexdump disabled — snprintf uses ~300 bytes stack,
      * can overflow CMUX thread stack with nested calls */
-    // LOG_D(TAG, "cmux_feed: %u bytes, state=%u", len, ctx->rx_state);
-    // elog_hexdump(TAG, data, len);
+    // elog_d(TAG, "cmux_feed: %u bytes, state=%u", len, ctx->rx_state);
+    // elog_hexdump(TAG, 16, data, len);
 
     for (uint16_t i = 0; i < len; i++) {
         uint8_t b = data[i];
@@ -264,7 +264,7 @@ void cmux_feed(cmux_t *ctx, const uint8_t *data, uint16_t len)
             if (b == CMUX_FLAG) {
                 ctx->rx_pos = 0;
                 ctx->rx_state = CMUX_RX_FRAME;
-                LOG_D(TAG, "RX frame start (byte %u/%u)", i, len);
+                elog_d(TAG, "RX frame start (byte %u/%u)", i, len);
             }
             break;
 
@@ -294,9 +294,9 @@ void cmux_feed(cmux_t *ctx, const uint8_t *data, uint16_t len)
                     uint8_t actual_fcs = ctx->rx_buf[fcs_len];
 
                     /* Log received raw frame — hexdump disabled to save stack */
-                    LOG_I(TAG, "RX [%u+2] FCS=%s:", ctx->rx_pos,
+                    elog_d(TAG, "RX [%u+2] FCS=%s:", ctx->rx_pos,
                           (expected_fcs == actual_fcs) ? "OK" : "ERR");
-                    // elog_hexdump(TAG, ctx->rx_buf, ctx->rx_pos);
+                    // elog_hexdump(TAG, 16, ctx->rx_buf, ctx->rx_pos);
 
                     if (expected_fcs == actual_fcs) {
                         /* Parse frame */
@@ -317,7 +317,7 @@ void cmux_feed(cmux_t *ctx, const uint8_t *data, uint16_t len)
                         ctx->rx_frames++;
                     } else {
                         ctx->fcs_errors++;
-                        LOG_W(TAG, "FCS error: expected 0x%02X got 0x%02X",
+                        elog_w(TAG, "FCS error: expected 0x%02X got 0x%02X",
                               expected_fcs, actual_fcs);
                     }
                 }
@@ -336,7 +336,7 @@ void cmux_feed(cmux_t *ctx, const uint8_t *data, uint16_t len)
                     /* Buffer overflow — discard frame */
                     ctx->rx_errors++;
                     ctx->rx_state = CMUX_RX_IDLE;
-                    LOG_W(TAG, "RX buffer overflow, discarding frame");
+                    elog_w(TAG, "RX buffer overflow, discarding frame");
                 }
             }
             break;
@@ -360,7 +360,7 @@ void cmux_init(cmux_t *ctx)
 
 int cmux_start(cmux_t *ctx)
 {
-    LOG_I(TAG, "Starting CMUX (mode=%d, N1=%d)", CMUX_MODE, CMUX_N1);
+    elog_d(TAG, "Starting CMUX (mode=%d, N1=%d)", CMUX_MODE, CMUX_N1);
 
     ctx->active = 1;
 
@@ -371,7 +371,7 @@ int cmux_start(cmux_t *ctx)
     for (uint8_t dlci = 0; dlci < CMUX_MAX_DLCI; dlci++) {
         /* Skip if already opened by modem-initiated SABM */
         if (ctx->channels[dlci].state == CMUX_CH_OPEN) {
-            LOG_I(TAG, "DLCI %u already open (modem-initiated)", dlci);
+            elog_d(TAG, "DLCI %u already open (modem-initiated)", dlci);
             tx_thread_sleep(10);  /* Small delay to let modem finish setup */
             continue;
         }
@@ -379,7 +379,7 @@ int cmux_start(cmux_t *ctx)
         /* Send SABM (P/F=1) */
         ctx->channels[dlci].state = CMUX_CH_SABM_SENT;
         cmux_frame_send(ctx, dlci, CMUX_SABM, NULL, 0, 1);
-        LOG_I(TAG, "SABM sent on DLCI %u, waiting for UA...", dlci);
+        elog_d(TAG, "SABM sent on DLCI %u, waiting for UA...", dlci);
 
         /* Wait for UA response */
         uint32_t timeout = CMUX_T1_MS / 10;
@@ -388,16 +388,16 @@ int cmux_start(cmux_t *ctx)
         }
 
         if (ctx->channels[dlci].state != CMUX_CH_OPEN) {
-            LOG_E(TAG, "DLCI %u SABM failed (no UA received, rx_frames=%u)",
+            elog_e(TAG, "DLCI %u SABM failed (no UA received, rx_frames=%u)",
                   dlci, ctx->rx_frames);
             ctx->active = 0;
             return -1;
         }
 
-        LOG_I(TAG, "DLCI %u opened", dlci);
+        elog_d(TAG, "DLCI %u opened", dlci);
     }
 
-    LOG_I(TAG, "CMUX active — DLCI 0(ctrl) 1(AT) 2(PPP) ready");
+    elog_d(TAG, "CMUX active — DLCI 0(ctrl) 1(AT) 2(PPP) ready");
     return 0;
 }
 

@@ -149,7 +149,7 @@ void cmux_serial_init_all(void)
         /* 注册 CMUX 帧回调 — cmux_feed 解析后调 dlci_rx_callback 写 ringbuf */
         cmux_set_rx_callback(&g_cmux, i + 1, dlci_rx_callback);
 
-        LOG_D(LOG_TAG, "DLCI %u ready (RX %uKB)", i + 1, RX_BUF_SIZE / 1024);
+        elog_d(LOG_TAG, "DLCI %u ready (RX %uKB)", i + 1, RX_BUF_SIZE / 1024);
     }
 }
 

@@ -43,9 +43,12 @@ extern "C" {
 
 #define USE_STATIC_ALLOCATION                    1
 
-#define TX_APP_MEM_POOL_SIZE                     1024*5
+#define TX_APP_MEM_POOL_SIZE                     1024*4
 
 #define NX_APP_MEM_POOL_SIZE                     65536
+
+/* 90KB: 64KB USBX system + 6KB threads + 19KB ECM resources + margin */
+#define UX_HOST_APP_MEM_POOL_SIZE                1024*100
 
 /* USER CODE BEGIN EC */
 

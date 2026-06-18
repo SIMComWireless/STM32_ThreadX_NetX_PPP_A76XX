@@ -31,6 +31,8 @@ extern "C" {
 #define BSP_UART3_RING_BUF_SIZE     (BSP_UART3_RX_BUF_SIZE * 2)
 #endif
 
+#define BSP_UART3_DEBUG             1
+
 /* ---------- Exported serial instance ------------------------------------- */
 
 /**
