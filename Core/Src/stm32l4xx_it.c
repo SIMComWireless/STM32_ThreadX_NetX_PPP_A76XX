@@ -224,8 +224,6 @@ void DMA1_Channel4_IRQHandler(void)
 
 /**
   * @brief This function handles USART3 global interrupt.
-  * @note   Idle-line detection is handled by HAL_UARTEx_ReceiveToIdle_DMA.
-  *         HAL calls HAL_UARTEx_RxEventCallback automatically.
   */
 void USART3_IRQHandler(void)
 {

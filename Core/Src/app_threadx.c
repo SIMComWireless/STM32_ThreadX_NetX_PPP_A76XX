@@ -65,7 +65,6 @@
 
 /* Private variables ---------------------------------------------------------*/
 TX_THREAD tx_app_thread;
-
 /* USER CODE BEGIN PV */
 
 static TX_THREAD modem_thread;

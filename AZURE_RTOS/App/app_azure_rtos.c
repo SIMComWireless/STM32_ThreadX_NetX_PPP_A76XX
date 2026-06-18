@@ -141,6 +141,7 @@ VOID tx_application_define(VOID *first_unused_memory)
     /* USER CODE BEGIN MX_NetXDuo_Init_Success */
 
     /* USER CODE END MX_NetXDuo_Init_Success */
+
   }
 
 #else
