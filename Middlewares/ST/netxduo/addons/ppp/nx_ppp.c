@@ -424,25 +424,37 @@ ULONG       count;
 
         /* Check for PPP Packet receive event.  */
         if (ppp_events & NX_PPP_EVENT_PACKET_RECEIVE)
-        { 
+        {
 
-            /* Pickup the next PPP packet from serial port to process. This is called whether an event was set or not
-               simply to handle the case when a non-PPP frame is received.  */
-            _nx_ppp_receive_packet_get(ppp_ptr, &packet_ptr);
-
-            /* Now determine if there is a packet to process.  */
-            if (packet_ptr)
+            /* Loop to drain ALL pending packets from the serial buffer.
+             * When the application feeds multiple PPP frames in a burst
+             * (e.g. modem sends CR + ACK back-to-back), all bytes land in
+             * the serial buffer and a single NX_PPP_EVENT_PACKET_RECEIVE
+             * event is set.  Without this loop, only the first frame would
+             * be processed and the rest would be stranded — the PPP state
+             * machine would stall because no new event would fire to wake
+             * the thread again. */
+            do
             {
 
-#ifdef NX_PPP_DEBUG_log_eNABLE
+                /* Pickup the next PPP packet from serial port to process. This is called whether an event was set or not
+                   simply to handle the case when a non-PPP frame is received.  */
+                _nx_ppp_receive_packet_get(ppp_ptr, &packet_ptr);
 
-                /* Insert an entry into the PPP frame debug log.  */
-                _nx_ppp_debug_log_capture(ppp_ptr, 'R', packet_ptr);
+                /* Now determine if there is a packet to process.  */
+                if (packet_ptr)
+                {
+
+#ifdef NX_PPP_DEBUG_LOG_ENABLE
+
+                    /* Insert an entry into the PPP frame debug log.  */
+                    _nx_ppp_debug_log_capture(ppp_ptr, 'R', packet_ptr);
 #endif
 
-                /* Yes, call the PPP packet processing routine.  */
-                _nx_ppp_receive_packet_process(ppp_ptr, packet_ptr);
-            }
+                    /* Yes, call the PPP packet processing routine.  */
+                    _nx_ppp_receive_packet_process(ppp_ptr, packet_ptr);
+                }
+            } while (packet_ptr);
         }
 
 #ifdef NX_PPP_PPPOE_ENABLE
@@ -477,7 +489,7 @@ ULONG       count;
                 /* Restore interrupts.  */
                 TX_RESTORE
 
-#ifdef NX_PPP_DEBUG_log_eNABLE
+#ifdef NX_PPP_DEBUG_LOG_ENABLE
 
                 /* Insert an entry into the PPP frame debug log.  */
                 _nx_ppp_debug_log_capture(ppp_ptr, 'R', packet_ptr);
@@ -7665,7 +7677,7 @@ UINT        release_packet = NX_TRUE;
 #endif /* NX_PPP_PPPOE_ENABLE  */
 
 
-#ifdef NX_PPP_DEBUG_log_eNABLE
+#ifdef NX_PPP_DEBUG_LOG_ENABLE
 
     /* Place the outgoing frame into the optional PPP debug log.  */
     _nx_ppp_debug_log_capture(ppp_ptr, 'S', packet_ptr);
@@ -8077,7 +8089,7 @@ UCHAR       control = 0x03;
 }
 
 
-#ifdef NX_PPP_DEBUG_log_eNABLE
+#ifdef NX_PPP_DEBUG_LOG_ENABLE
 /**************************************************************************/ 
 /*                                                                        */ 
 /*  FUNCTION                                               RELEASE        */ 
@@ -8291,7 +8303,7 @@ void  _nx_ppp_debug_log_capture_protocol(NX_PPP *ppp_ptr)
 
     printf("\n");
 }
-#endif /* NX_PPP_DEBUG_log_eNABLE */
+#endif /* NX_PPP_DEBUG_LOG_ENABLE */
 
 
 #ifndef NX_PPP_DISABLE_CHAP

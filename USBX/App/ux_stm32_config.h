@@ -34,7 +34,7 @@ extern "C" {
 
 /* Private defines -----------------------------------------------------------*/
 
-#define UX_DCD_STM32_MAX_ED                                     6
+#define UX_DCD_STM32_MAX_ED                                     12
 #ifndef HCD_DEVICE_SPEED_HIGH
 #define HCD_DEVICE_SPEED_HIGH                                   0U
 #endif

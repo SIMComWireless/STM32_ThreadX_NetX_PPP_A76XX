@@ -72,17 +72,17 @@ UINT  ux_host_event_callback(ULONG event, UX_HOST_CLASS *p_host_class, VOID *p_i
 /* USER CODE BEGIN PD */
 #define APP_QUEUE_SIZE                               5
 #define USBX_APP_STACK_SIZE                          1024
-#define USBX_MEMORY_SIZE                             (96 * 1024)
+#define USBX_MEMORY_SIZE                             (160 * 1024)
 #define NEW_RECEIVED_DATA                            0x01
 #define NEW_DATA_TO_SEND                             0x02
 #define BUTTON_KEY_PIN                               1
 
 /* USB modem interface numbers — adjust per A7683E variant */
 #ifndef A7683E_USB_AT_IFNUM
-#define A7683E_USB_AT_IFNUM                          4
+#define A7683E_USB_AT_IFNUM                          5
 #endif
 #ifndef A7683E_USB_MODEM_IFNUM
-#define A7683E_USB_MODEM_IFNUM                       5
+#define A7683E_USB_MODEM_IFNUM                       4
 #endif
 
 /* USER CODE END PD */

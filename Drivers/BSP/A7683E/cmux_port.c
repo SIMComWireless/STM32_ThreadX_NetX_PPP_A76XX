@@ -167,7 +167,7 @@ void cmux_bridge_stop(void)
     tx_thread_delete(&cmux_thread);
     tx_event_flags_delete(&cmux_events);
 
-    eelog_i(TAG, "CMUX bridge stopped");
+    elog_i(TAG, "CMUX bridge stopped");
 }
 
 #endif /* CMUX_ENABLE */

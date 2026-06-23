@@ -204,11 +204,11 @@ UINT a7683e_escape_ppp(void)
     elog_d(TAG, "Escaping PPP mode (+++)...");
 
     /* +++ escape sequence per ITU-T V.250:
-     * 1s silence → +++ → 1s silence → then commands */
+     * ≥1s silence → +++ → ≥1s silence → then commands */
     flush_rx();
-    tx_thread_sleep(100);  /* Pre-guard: 1s silence before +++ (V.250) */
+    tx_thread_sleep(1100);  /* Pre-guard: ≥1s silence before +++ (V.250) */
     modem_serial->write((const uint8_t *)"+++", 3);
-    tx_thread_sleep(2000);
+    tx_thread_sleep(1100);  /* Post-guard: ≥1s silence after +++ (V.250) */
     char esc_buf[64] = {0};
     uint16_t got = modem_serial->read((uint8_t *)esc_buf, sizeof(esc_buf) - 1, 1000);
     if (got > 0 && strstr(esc_buf, "OK"))
@@ -340,22 +340,50 @@ UINT a7683e_init(void)
     elog_d(TAG, "=== A7683E Modem Initialization ===");
     elog_d(TAG, "Serial port: %s", modem_serial->name);
 
-#if A7683E_TRANSPORT != A7683E_TRANSPORT_USB
-    /* Step 0: Escape from CMUX/PPP if modem is in a stale state (UART/CMUX only) */
+    /* Step 0: Escape from CMUX/PPP if modem is in a stale state */
     elog_d(TAG, "[0/7] Checking for stale CMUX/PPP mode...");
+#if A7683E_TRANSPORT != A7683E_TRANSPORT_USB
     a7683e_escape_cmux();  /* Ignore return — TIMEOUT means not in CMUX */
-    a7683e_escape_ppp();   /* Ignore return — TIMEOUT means not in PPP */
-#else
-    elog_d(TAG, "[0/7] USB mode — skip CMUX/PPP escape");
 #endif
+    a7683e_escape_ppp();   /* Ignore return — TIMEOUT means not in PPP */
+
 
     /* Step 1: Sync with modem (send AT up to 5 times) */
     elog_d(TAG, "[1/7] Syncing with modem...");
     status = a7683e_sync();
     if (status != A7683E_OK)
     {
-        elog_e(TAG, "Modem not responding");
-        return A7683E_ERROR;
+        /* Modem not responding — likely stuck in PPP data mode after MCU reset.
+         * Power cycle the modem to force it back to AT command mode. */
+        elog_w(TAG, "Modem not responding — power cycling...");
+        a7683e_power_off();
+        a7683e_power_on();
+
+        /* Power cycle causes USB disconnect + re-enumeration.
+         * Poll for modem_serial to be re-wired by the USB event callback.
+         * The old instance was replaced during re-enumeration; the callback
+         * calls bsp_usb_get() + a7683e_set_serial() when the new instance
+         * is ready. Timeout after 30s to avoid hanging forever. */
+        elog_d(TAG, "Waiting for modem to boot and re-enumerate...");
+        modem_serial = NULL;  /* Clear stale pointer — will be re-set by USB callback */
+        for (int i = 0; i < 300 && !modem_serial; i++) {
+            tx_thread_sleep(100);
+        }
+
+        if (!modem_serial) {
+            elog_e(TAG, "Serial port lost after power cycle — waiting for USB reconnect...");
+            return A7683E_ERROR;
+        }
+        elog_d(TAG, "Serial port re-acquired after power cycle");
+
+        /* Retry sync after power cycle */
+        status = a7683e_sync();
+        if (status != A7683E_OK)
+        {
+            elog_e(TAG, "Modem still not responding after power cycle");
+            return A7683E_ERROR;
+        }
+        elog_i(TAG, "Modem recovered after power cycle");
     }
 
     /* Step 2: Disable echo */
@@ -386,6 +414,23 @@ UINT a7683e_init(void)
                 elog_i(TAG, "usbnetmode=0, switching to ECM...");
                 a7683e_send_at("AT$MYCONFIG=\"usbnetmode\",1",
                                resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+            }
+        }
+    }
+
+    /* Check and configure dial mode: 0=ECM data path, 1=command dial */
+    status = a7683e_send_at("AT+DIALMODE?", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+    if (status == A7683E_OK)
+    {
+        char *p = strstr(resp_buf, "+DIALMODE:");
+        if (p)
+        {
+            int mode = *(p + 11) - '0';  /* "+DIALMODE: " is 11 chars, digit at p+11 */
+            elog_d(TAG, "DIALMODE=%d", mode);
+            if (mode == 1)
+            {
+                elog_i(TAG, "Setting DIALMODE=0 (ECM data path)...");
+                a7683e_send_at("AT+DIALMODE=0", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
             }
         }
     }
@@ -524,13 +569,15 @@ UINT a7683e_ppp_dial(void)
     flush_rx();
     modem_serial->write((const uint8_t *)"ATD*99***1#\r", 12);
 
-    UINT status = wait_for_response("CONNECT 115200\r\n", resp, sizeof(resp), 30000);
+    UINT status = wait_for_response("CONNECT", resp, sizeof(resp), 30000);
 
     if (status == A7683E_OK)
     {
         elog_d(TAG, "PPP CONNECT received — modem is now in data mode");
-        tx_thread_sleep(100);
-        flush_rx();
+        /* NOTE: Do NOT flush_rx() here! The modem immediately starts sending
+         * PPP LCP frames after CONNECT. Flushing would discard the modem's
+         * initial LCP Configure-Request, causing PPP negotiation to hang
+         * with LCP stuck in REQ_SENT state. */
         return A7683E_OK;
     }
    
@@ -718,3 +765,35 @@ UINT a7683e_cmux_send_at_dlci2(const char *cmd, char *resp, uint16_t resp_len, u
 }
 
 #endif /* CMUX_ENABLE */
+
+/**
+ * @brief  Cleanup modem state after USB disconnect or PPP teardown.
+ *         Attempts to escape PPP mode and deactivate PDP context.
+ *         Skips AT commands if modem_serial is NULL (device already removed).
+ *         Failures are non-fatal (device may already be gone).
+ */
+void a7683e_cleanup(void)
+{
+    elog_d(TAG, "Modem cleanup...");
+
+    if (!modem_serial) {
+        elog_d(TAG, "No serial port — skipping AT cleanup (device removed)");
+        return;
+    }
+
+    /* Try to escape PPP mode (short timeout — device may be gone) */
+    UINT rc = a7683e_escape_ppp();
+    if (rc == A7683E_OK) {
+        elog_d(TAG, "PPP mode escaped");
+    }
+
+    /* Try to deactivate PDP context (may fail if device is gone — that's OK) */
+    rc = a7683e_send_at("AT+CGACT=0,1", resp_buf, sizeof(resp_buf), 5000);
+    if (rc == A7683E_OK) {
+        elog_d(TAG, "PDP context deactivated");
+    } else {
+        elog_w(TAG, "PDP deactivation skipped/failed: 0x%02X", rc);
+    }
+
+    elog_d(TAG, "Modem cleanup done");
+}

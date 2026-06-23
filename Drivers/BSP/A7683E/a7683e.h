@@ -137,6 +137,23 @@ UINT a7683e_pre_dial(at_send_fn_t send_at);
 UINT a7683e_ppp_dial(void);
 
 /**
+ * @brief  Drain bytes captured during AT response parsing (overflow buffer).
+ *         Call from PPP read thread to recover PPP data that arrived immediately
+ *         after a keyword like "CONNECT\r\n" during wait_for_response().
+ * @param  dst      Destination buffer
+ * @param  max_len  Maximum bytes to drain
+ * @return Number of bytes actually drained
+ */
+uint16_t a7683e_drain_overflow(uint8_t *dst, uint16_t max_len);
+
+/**
+ * @brief  Cleanup modem state after USB disconnect or PPP teardown.
+ *         Attempts to escape PPP mode and deactivate PDP context.
+ *         Failures are non-fatal (device may already be gone).
+ */
+void a7683e_cleanup(void);
+
+/**
  * @brief  Send an AT command and wait for response (direct UART)
  * @param  cmd        AT command string (e.g. "AT\r")
  * @param  resp       Response buffer

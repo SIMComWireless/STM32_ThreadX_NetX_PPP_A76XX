@@ -3,13 +3,10 @@
  *
  * Adapted from ux_host_class_gser (Generic Serial, Qualcomm/Sierra Wireless).
  *
- * Architecture (device-level activation via PID/VID match):
- *   - QUERY matches by VID/PID.
- *   - ACTIVATE receives the whole device.  It calls SET_CONFIGURATION,
- *     then scans ALL interfaces.  Each interface that exposes bulk IN + OUT
- *     endpoints gets its own independent UX_HOST_CLASS_MODEM instance.
- *   - Interfaces without bulk endpoints (e.g. Wireless Controller, HID)
- *     are silently skipped.
+ * Architecture (interface-level activation via CSP match):
+ *   - QUERY matches Class=0xFF (vendor-specific) interfaces via CSP.
+ *   - ACTIVATE receives a single UX_INTERFACE* and creates one instance.
+ *   - CDC-ECM handles Class=0x02/0x0A (ECM) interfaces independently.
  *   - Global table ux_host_class_modem_instances[] lets the application
  *     look up any activated interface by index or interface number.
  */
@@ -19,6 +16,7 @@
 #include "ux_api.h"
 #include "ux_host_stack.h"
 #include "ux_host_class_modem.h"
+#include "bsp_usb.h"
 #include "elog.h"
 
 #define TAG "MODEM"
@@ -78,15 +76,65 @@ static UINT modem_endpoints_get(UX_HOST_CLASS_MODEM *modem)
 /*
  * modem_activate_one — create a per-interface instance.
  * Called for each interface that has bulk endpoints.
+ *
+ * If an instance with the same interface number already exists (e.g. from
+ * a previous enumeration before MCU reset), the old instance is replaced.
+ * This prevents the instance table from overflowing on re-enumeration.
  */
 static UINT modem_activate_one(UX_HOST_CLASS_MODEM *modem)
 {
     UINT status;
+    ULONG ifnum;
+    ULONG i;
 
     status = modem_endpoints_get(modem);
     if (status != UX_SUCCESS)
         return status;
 
+    ifnum = modem->interface->ux_interface_descriptor.bInterfaceNumber;
+
+    /* Check for duplicate — replace old instance if same ifnum exists.
+     * This handles re-enumeration after MCU reset where the modem stays
+     * powered and re-enumerates without a proper disconnect event. */
+    for (i = 0; i < ux_host_class_modem_count; i++)
+    {
+        UX_HOST_CLASS_MODEM *old = ux_host_class_modem_instances[i];
+        if (old != UX_NULL &&
+            old->interface->ux_interface_descriptor.bInterfaceNumber == ifnum)
+        {
+            elog_w(TAG, "REPLACE ifnum=%u — old instance %p replaced by %p",
+                  (unsigned)ifnum, (void *)old, (void *)modem);
+
+            /* Stop async RX on old instance to prevent use-after-free */
+            if (old->rx_state != UX_HOST_CLASS_MODEM_RX_STOPPED)
+                ux_host_class_modem_reception_stop(old);
+
+            old->state = UX_HOST_CLASS_MODEM_STATE_SHUTDOWN;
+            _ux_host_semaphore_delete(&old->semaphore);
+            _ux_host_stack_class_instance_destroy(old->class_ptr, (VOID *)old);
+
+            /* Notify BSP USB to clear cached pointer before freeing */
+            bsp_usb_notify_deactivated((uint8_t)ifnum);
+
+            /* Free old instance memory — prevents leak on re-enumeration */
+            _ux_utility_memory_free(old);
+
+            /* Replace in table (don't increment count) */
+            ux_host_class_modem_instances[i] = modem;
+            goto activate;
+        }
+    }
+
+    /* No duplicate — add to table */
+    if (ux_host_class_modem_count >= UX_HOST_CLASS_MODEM_MAX_INSTANCES)
+    {
+        elog_e(TAG, "Instance table full (%lu) — cannot add ifnum=%u",
+              (unsigned long)ux_host_class_modem_count, (unsigned)ifnum);
+        return UX_MEMORY_INSUFFICIENT;
+    }
+    ux_host_class_modem_instances[ux_host_class_modem_count++] = modem;
+
+activate:
     status = _ux_host_semaphore_create(&modem->semaphore, "ux_modem_sem", 1);
     if (status != UX_SUCCESS)
         return status;
@@ -94,11 +142,8 @@ static UINT modem_activate_one(UX_HOST_CLASS_MODEM *modem)
     _ux_host_stack_class_instance_create(modem->class_ptr, (VOID *)modem);
     modem->state = UX_HOST_CLASS_MODEM_STATE_LIVE;
 
-    if (ux_host_class_modem_count < UX_HOST_CLASS_MODEM_MAX_INSTANCES)
-        ux_host_class_modem_instances[ux_host_class_modem_count++] = modem;
-
     elog_d(TAG, "LIVE ifnum=%u in=%p out=%p [%lu]",
-          (unsigned)modem->interface->ux_interface_descriptor.bInterfaceNumber,
+          (unsigned)ifnum,
           (void *)modem->bulk_in, (void *)modem->bulk_out,
           (unsigned long)ux_host_class_modem_count);
 
@@ -112,176 +157,123 @@ UINT ux_host_class_modem_entry(UX_HOST_CLASS_COMMAND *command)
     switch (command->ux_host_class_command_request)
     {
 
-    /* ---- QUERY: match by VID/PID, skip ECM/RNDIS interfaces ---- */
+    /* ---- QUERY: CSP match for vendor-specific (0xFF) interfaces ---- */
     case UX_HOST_CLASS_COMMAND_QUERY:
-        if ((command->ux_host_class_command_usage == UX_HOST_CLASS_COMMAND_USAGE_PIDVID) &&
-            (command->ux_host_class_command_vid  == UX_HOST_CLASS_MODEM_VID) &&
-            (command->ux_host_class_command_pid  == UX_HOST_CLASS_MODEM_PID))
+        if (command->ux_host_class_command_usage == UX_HOST_CLASS_COMMAND_USAGE_CSP)
         {
-            UX_INTERFACE *iface = (UX_INTERFACE *)command->ux_host_class_command_container;
-            UINT cls = iface->ux_interface_descriptor.bInterfaceClass;
-            UINT sub = iface->ux_interface_descriptor.bInterfaceSubClass;
+            UINT cls = command->ux_host_class_command_class;
 
-            /* Let CDC-ECM class handle ECM control (0x02/0x06) and data (0x0A/0x00) */
-            if ((cls == 0x02 && sub == 0x06) || (cls == 0x0A && sub == 0x00))
-                return UX_NO_CLASS_MATCH;
-            /* Skip RNDIS control (0xE0/0x01) — no driver */
-            if (cls == 0xE0 && sub == 0x01)
-                return UX_NO_CLASS_MATCH;
-
-            return UX_SUCCESS;
+            /* Match vendor-specific interfaces only */
+            if (cls == 0xFF)
+                return UX_SUCCESS;
         }
         return UX_NO_CLASS_MATCH;
 
-    /* ---- ACTIVATE: device-level, scan all interfaces ---- */
+    /* ---- ACTIVATE: per-interface ---- */
     case UX_HOST_CLASS_COMMAND_ACTIVATE:
         {
-            UX_DEVICE           *device;
-            UX_CONFIGURATION    *configuration;
             UX_INTERFACE        *iface;
+            UX_DEVICE           *device;
             UX_HOST_CLASS       *class_ptr;
             UX_HOST_CLASS_MODEM *modem;
             UINT                 status;
-            ULONG                if_idx;
 
-            device    = (UX_DEVICE *)command->ux_host_class_command_container;
+            iface     = (UX_INTERFACE *)command->ux_host_class_command_container;
+            device    = iface->ux_interface_configuration->ux_configuration_device;
             class_ptr = command->ux_host_class_command_class_ptr;
 
             /* Cache class pointer for event callback identification. */
             if (ux_host_class_modem_class_ptr == UX_NULL)
                 ux_host_class_modem_class_ptr = class_ptr;
 
-            elog_d(TAG, "ACTIVATE device VID=0x%04X PID=0x%04X",
-                  (unsigned)device->ux_device_descriptor.idVendor,
-                  (unsigned)device->ux_device_descriptor.idProduct);
+            elog_d(TAG, "ACTIVATE ifnum=%u class=0x%02X sub=0x%02X ep=%u",
+                  (unsigned)iface->ux_interface_descriptor.bInterfaceNumber,
+                  (unsigned)iface->ux_interface_descriptor.bInterfaceClass,
+                  (unsigned)iface->ux_interface_descriptor.bInterfaceSubClass,
+                  (unsigned)iface->ux_interface_descriptor.bNumEndpoints);
 
-            /* SET_CONFIGURATION (no-op if already configured). */
-            {
-                UX_HOST_CLASS_MODEM tmp;
-                tmp.device = device;
-                status = _ux_host_stack_device_configuration_get(device, 0, &configuration);
-                if (status != UX_SUCCESS)
-                    return status;
-                status = _ux_host_stack_device_configuration_select(configuration);
-                if (status != UX_SUCCESS)
-                {
-                    elog_e(TAG, "configure failed 0x%02X", status);
-                    return status;
-                }
-            }
+            /* Allocate per-interface instance. */
+            modem = (UX_HOST_CLASS_MODEM *)
+                _ux_utility_memory_allocate(UX_NO_ALIGN, UX_REGULAR_MEMORY,
+                                            sizeof(UX_HOST_CLASS_MODEM));
+            if (modem == UX_NULL)
+                return UX_MEMORY_INSUFFICIENT;
 
-            /* Get the configuration to access interfaces. */
-            status = _ux_host_stack_device_configuration_get(device, 0, &configuration);
+            modem->class_ptr = class_ptr;
+            modem->device    = device;
+            modem->interface = iface;
+
+            status = modem_activate_one(modem);
             if (status != UX_SUCCESS)
-                return status;
-
-            /* Scan ALL interfaces in this configuration. */
-            for (if_idx = 0; ; if_idx++)
             {
-                status = _ux_host_stack_configuration_interface_get(
-                             configuration, if_idx, 0, &iface);
-                if (status != UX_SUCCESS)
-                    break;  /* No more interfaces */
-
-                elog_d(TAG, "  ifnum=%u class=0x%02X sub=0x%02X ep=%u",
-                      (unsigned)iface->ux_interface_descriptor.bInterfaceNumber,
-                      (unsigned)iface->ux_interface_descriptor.bInterfaceClass,
-                      (unsigned)iface->ux_interface_descriptor.bInterfaceSubClass,
-                      (unsigned)iface->ux_interface_descriptor.bNumEndpoints);
-
-                /* Skip ECM/RNDIS interfaces — same filter as QUERY */
-                {
-                    UINT cls = iface->ux_interface_descriptor.bInterfaceClass;
-                    UINT sub = iface->ux_interface_descriptor.bInterfaceSubClass;
-                    if ((cls == 0x02 && sub == 0x06) || (cls == 0x0A && sub == 0x00) ||
-                        (cls == 0xE0 && sub == 0x01))
-                        continue;
-                }
-
-                /* Allocate per-interface instance. */
-                modem = (UX_HOST_CLASS_MODEM *)
-                    _ux_utility_memory_allocate(UX_NO_ALIGN, UX_REGULAR_MEMORY,
-                                                sizeof(UX_HOST_CLASS_MODEM));
-                if (modem == UX_NULL)
-                    continue;
-
-                modem->class_ptr = class_ptr;
-                modem->device    = device;
-                modem->interface = iface;
-
-                status = modem_activate_one(modem);
-                if (status != UX_SUCCESS)
-                {
-                    elog_d(TAG, "  SKIP ifnum=%u (0x%02X)",
-                          (unsigned)iface->ux_interface_descriptor.bInterfaceNumber, status);
-                    _ux_utility_memory_free(modem);
-                    continue;
-                }
-
-                /* Notify application for each activated interface. */
-                if (_ux_system_host->ux_system_host_change_function != UX_NULL)
-                    _ux_system_host->ux_system_host_change_function(
-                        UX_DEVICE_INSERTION, class_ptr, (VOID *)modem);
+                elog_d(TAG, "  SKIP ifnum=%u (0x%02X)",
+                      (unsigned)iface->ux_interface_descriptor.bInterfaceNumber, status);
+                _ux_utility_memory_free(modem);
+                return status;
             }
 
-            elog_d(TAG, "ACTIVATE done — %lu instance(s)",
-                  (unsigned long)ux_host_class_modem_count);
-            return (ux_host_class_modem_count > 0) ? UX_SUCCESS : UX_NO_CLASS_MATCH;
+            /* Notify application. */
+            if (_ux_system_host->ux_system_host_change_function != UX_NULL)
+                _ux_system_host->ux_system_host_change_function(
+                    UX_DEVICE_INSERTION, class_ptr, (VOID *)modem);
+
+            return UX_SUCCESS;
         }
 
-    /* ---- DEACTIVATE: device removed, destroy all its instances ---- */
+    /* ---- DEACTIVATE: single instance removed ---- */
     case UX_HOST_CLASS_COMMAND_DEACTIVATE:
         {
             UX_HOST_CLASS_MODEM *modem;
-            UX_HOST_CLASS_MODEM *inst;
-            UX_DEVICE           *device;
             ULONG                i;
+            ULONG                ifnum;
 
             modem = (UX_HOST_CLASS_MODEM *)command->ux_host_class_command_instance;
             if (modem == UX_NULL)
                 return UX_ERROR;
 
-            device = modem->device;
+            ifnum = modem->interface->ux_interface_descriptor.bInterfaceNumber;
+            elog_d(TAG, "DEACTIVATE ifnum=%u", (unsigned)ifnum);
 
-            elog_d(TAG, "DEACTIVATE device — removing all instances");
+            /* Notify BSP USB to clear cached modem pointer BEFORE freeing.
+             * Prevents use-after-free in bsp_usb read/write functions. */
+            bsp_usb_notify_deactivated((uint8_t)ifnum);
 
-            /* Walk the global table backwards so removal-by-swap is safe. */
-            for (i = ux_host_class_modem_count; i > 0; i--)
+            /* Stop async RX if running (prevents callback use-after-free). */
+            if (modem->rx_state != UX_HOST_CLASS_MODEM_RX_STOPPED)
+                ux_host_class_modem_reception_stop(modem);
+
+            modem->state = UX_HOST_CLASS_MODEM_STATE_SHUTDOWN;
+
+            if (modem->bulk_out)
+                _ux_host_stack_endpoint_transfer_abort(modem->bulk_out);
+            if (modem->bulk_in)
+                _ux_host_stack_endpoint_transfer_abort(modem->bulk_in);
+
+            _ux_host_semaphore_delete(&modem->semaphore);
+            _ux_host_stack_class_instance_destroy(modem->class_ptr, (VOID *)modem);
+
+            /* Remove from global table (swap-with-last). */
+            for (i = 0; i < ux_host_class_modem_count; i++)
             {
-                inst = ux_host_class_modem_instances[i - 1];
-                if (inst == UX_NULL || inst->device != device)
-                    continue;
-
-                /* Stop async RX if running (prevents callback use-after-free). */
-                if (inst->rx_state != UX_HOST_CLASS_MODEM_RX_STOPPED)
-                    ux_host_class_modem_reception_stop(inst);
-
-                inst->state = UX_HOST_CLASS_MODEM_STATE_SHUTDOWN;
-
-                if (inst->bulk_out)
-                    _ux_host_stack_endpoint_transfer_abort(inst->bulk_out);
-                if (inst->bulk_in)
-                    _ux_host_stack_endpoint_transfer_abort(inst->bulk_in);
-
-                _ux_host_semaphore_delete(&inst->semaphore);
-                _ux_host_stack_class_instance_destroy(inst->class_ptr, (VOID *)inst);
-
-                /* Remove from global table (swap with last). */
-                ux_host_class_modem_instances[i - 1] =
-                    ux_host_class_modem_instances[--ux_host_class_modem_count];
-                ux_host_class_modem_instances[ux_host_class_modem_count] = UX_NULL;
-
-                elog_d(TAG, "  removed ifnum=%u",
-                      (unsigned)inst->interface->ux_interface_descriptor.bInterfaceNumber);
-
-                /* Notify application. */
-                if (_ux_system_host->ux_system_host_change_function != UX_NULL)
-                    _ux_system_host->ux_system_host_change_function(
-                        UX_DEVICE_REMOVAL, inst->class_ptr, (VOID *)inst);
-
-                _ux_utility_memory_free(inst);
+                if (ux_host_class_modem_instances[i] == modem)
+                {
+                    ux_host_class_modem_instances[i] =
+                        ux_host_class_modem_instances[--ux_host_class_modem_count];
+                    ux_host_class_modem_instances[ux_host_class_modem_count] = UX_NULL;
+                    break;
+                }
             }
 
+            elog_d(TAG, "  removed ifnum=%u [%lu left]",
+                  (unsigned)ifnum,
+                  (unsigned long)ux_host_class_modem_count);
+
+            /* Notify application. */
+            if (_ux_system_host->ux_system_host_change_function != UX_NULL)
+                _ux_system_host->ux_system_host_change_function(
+                    UX_DEVICE_REMOVAL, modem->class_ptr, (VOID *)modem);
+
+            _ux_utility_memory_free(modem);
             return UX_SUCCESS;
         }
 
@@ -432,7 +424,15 @@ static VOID modem_rx_callback(UX_TRANSFER *transfer_request)
     ULONG                actual;
 
     modem = (UX_HOST_CLASS_MODEM *)transfer_request->ux_transfer_request_class_instance;
-    if (modem == NULL || modem->rx_state != UX_HOST_CLASS_MODEM_RX_STARTED)
+    if (modem == NULL)
+        return;
+
+    /* Check aborting first — volatile, so ISR always sees the latest value.
+     * If reception_stop is in progress, do NOT touch the transfer or lwrb. */
+    if (modem->rx_aborting)
+        return;
+
+    if (modem->rx_state != UX_HOST_CLASS_MODEM_RX_STARTED)
         return;
 
     if (transfer_request->ux_transfer_request_completion_code != UX_SUCCESS)
@@ -445,7 +445,10 @@ static VOID modem_rx_callback(UX_TRANSFER *transfer_request)
     if (actual > 0)
         lwrb_write(&modem->rx_rb, modem->rx_xfer_buf, actual);
 
-    /* Re-arm */
+    /* Re-arm only if not aborting (double-check after potential ISR preemption) */
+    if (modem->rx_aborting)
+        return;
+
     transfer_request->ux_transfer_request_requested_length = modem->rx_block_size;
     _ux_host_stack_transfer_request(transfer_request);
 }
@@ -493,6 +496,7 @@ UINT ux_host_class_modem_reception_start(UX_HOST_CLASS_MODEM *modem,
     xfer->ux_transfer_request_class_instance      = (VOID *)modem;
     xfer->ux_transfer_request_completion_function  = modem_rx_callback;
 
+    modem->rx_aborting = 0;  /* clear before enabling RX */
     modem->rx_state = UX_HOST_CLASS_MODEM_RX_STARTED;
 
     status = _ux_host_stack_transfer_request(xfer);
@@ -521,10 +525,23 @@ UINT ux_host_class_modem_reception_stop(UX_HOST_CLASS_MODEM *modem)
     if (modem->rx_state == UX_HOST_CLASS_MODEM_RX_STOPPED)
         return UX_SUCCESS;
 
+    /* Set aborting flag first — volatile, visible to ISR immediately.
+     * Prevents modem_rx_callback from re-arming the transfer even if
+     * the ISR fires between setting rx_state and calling abort. */
+    modem->rx_aborting = 1;
+
+    /* Set STOPPED — prevents modem_rx_callback from re-arming.
+     * Must happen before the abort, because abort may invoke the callback
+     * synchronously from thread context. */
     modem->rx_state = UX_HOST_CLASS_MODEM_RX_STOPPED;
+
+    /* Abort the in-flight transfer.  This halts the HCD channel and
+     * invokes modem_rx_callback with completion_code != UX_SUCCESS,
+     * which returns without re-arming.  After this call returns, no
+     * ISR will access the bounce buffer. */
     _ux_host_stack_endpoint_transfer_abort(modem->bulk_in);
 
-    /* Free bounce buffer. */
+    /* Now safe to free the bounce buffer — no in-flight DMA. */
     if (modem->rx_xfer_buf != UX_NULL)
     {
         _ux_utility_memory_free(modem->rx_xfer_buf);

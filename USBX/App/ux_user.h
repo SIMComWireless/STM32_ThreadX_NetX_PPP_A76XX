@@ -216,6 +216,9 @@
 
 /* #define UX_ENFORCE_SAFE_ALIGNMENT */
 
+/* Enable memory pool sanity checks — catches corruption early */
+#define UX_ENABLE_MEMORY_POOL_SANITY_CHECK
+
 /* Defined, this value represents the number of packets in the CDC_ECM device class.
    The default is 16.
 */
@@ -307,6 +310,8 @@
 /* Defined, this value represents the size of the log pool.
 */
 /* #define UX_DEBUG_LOG_SIZE                                   (1024 * 16) */
+
+/* #define UX_ENABLE_DEBUG_LOG */  /* Disable in production to save RAM/CPU */
 
 /* This is the ThreadX priority value for the USBX enumeration threads that monitors the bus topology */
 

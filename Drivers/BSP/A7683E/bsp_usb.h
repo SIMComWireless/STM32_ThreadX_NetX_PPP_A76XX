@@ -50,6 +50,15 @@ bsp_serial_t *bsp_usb_get(uint8_t ifnum);
  */
 void bsp_usb_init_all(void);
 
+/**
+ * @brief  Notify BSP USB that a modem interface was deactivated.
+ *         Clears the cached modem pointer for the given interface number
+ *         to prevent use-after-free when the instance is freed.
+ *         Called from ux_host_class_modem DEACTIVATE handler.
+ * @param  ifnum  USB interface number that was deactivated
+ */
+void bsp_usb_notify_deactivated(uint8_t ifnum);
+
 #ifdef __cplusplus
 }
 #endif

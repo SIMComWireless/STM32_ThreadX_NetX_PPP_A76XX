@@ -71,6 +71,7 @@ typedef struct UX_HOST_CLASS_MODEM_STRUCT
     UCHAR                               *rx_xfer_buf;     /* bounce buffer for USB DMA */
     UX_TRANSFER                          rx_transfer;     /* dedicated transfer for RX */
     volatile UINT                        rx_state;        /* UX_HOST_CLASS_MODEM_RX_*  */
+    volatile UINT                        rx_aborting;     /* set before abort; ISR must not re-arm */
     ULONG                                rx_block_size;   /* bytes per USB transfer    */
 } UX_HOST_CLASS_MODEM;
 

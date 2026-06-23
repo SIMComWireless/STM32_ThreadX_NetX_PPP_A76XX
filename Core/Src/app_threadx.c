@@ -35,11 +35,6 @@
 #include "cmux.h"
 #include "cmux_serial.h"
 
-/* ECM event flags — defined in app_usbx_host.h, forward-declared here
- * to avoid cross-module header dependency */
-#define ECM_LINK_UP_EVT         0x04
-#define ECM_DEVICE_CONNECTED    0x08
-extern TX_EVENT_FLAGS_GROUP ux_app_EventFlag;
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -226,9 +221,11 @@ void tx_app_thread_entry(ULONG thread_input)
 
 /* USER CODE BEGIN 1 */
 
-/** Fatal error handler — blink red LED and halt */
+/** Fatal error handler — blink red LED and halt.
+ *  Kept for truly unrecoverable errors (e.g. pool exhaustion). */
 static void modem_fatal(void)
 {
+  elog_e(TAG, "FATAL — system halted");
   while (1)
   {
     HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
@@ -302,6 +299,34 @@ ppp_start:
 }
 
 /**
+  * @brief  Cleanup all network and serial state on USB disconnect.
+  *         Must be called before waiting for reconnect.
+  */
+static void modem_disconnect_cleanup(void)
+{
+    elog_w(TAG, "=== USB modem disconnected — cleanup start ===");
+
+    /* Step 1: Destroy PPP + IP + network threads */
+    app_netxduo_destroy_ppp();
+
+    /* Step 2: Destroy ECM IP instance (prevents resource leak on reconnect) */
+    app_netxduo_ecm_destroy();
+
+    /* Step 3: Cleanup modem AT state (escape PPP, deactivate PDP).
+     *         Only attempts AT commands if serial port is still valid;
+     *         on USB disconnect the device is already gone, so this
+     *         primarily clears internal state. */
+    a7683e_cleanup();
+
+    /* Step 4: Clear serial pointers — device is gone.
+     *         Prevents use-after-free on next reconnect cycle. */
+    a7683e_set_serial(NULL);
+    app_netxduo_set_serial(NULL);
+
+    elog_i(TAG, "=== Disconnect cleanup complete — waiting for USB reconnect ===");
+}
+
+/**
   * @brief  Modem initialization thread
   * @note   ECM-first strategy with PPP fallback
   *
@@ -309,6 +334,7 @@ ppp_start:
   *   1. AT init (sync, SIM, APN, network registration)
   *   2. Try ECM mode: AT+CUSB=1 → wait for USB ECM link-up
   *   3. If ECM fails → fallback to PPP (dial → PPP negotiation)
+  *   4. On USB disconnect: cleanup and loop back to step 1
   */
 static void modem_thread_entry(ULONG param)
 {
@@ -317,32 +343,54 @@ static void modem_thread_entry(ULONG param)
 
   elog_d(TAG, "Modem thread started");
 
+  while (1)
+  {
 #if A7683E_TRANSPORT == A7683E_TRANSPORT_USB
-  /* USB mode: wait for enumeration and serial port wiring */
-  elog_d(TAG, "Waiting for USB serial port...");
-  while (!a7683e_is_serial_ready())
-    tx_thread_sleep(100);
-  elog_d(TAG, "USB serial port ready");
+    /* USB mode: wait for enumeration and serial port wiring.
+     * After disconnect, modem_serial is cleared to NULL, so
+     * a7683e_is_serial_ready() returns false until USB re-enumerates
+     * and the event callback re-calls a7683e_set_serial(). */
+    elog_i(TAG, "Waiting for USB serial port...");
+    while (!a7683e_is_serial_ready())
+      tx_thread_sleep(100);
+    elog_i(TAG, "USB serial port ready");
 #endif
 
-  //a7683e_power_on();
-  status = a7683e_init();
-  if (status != A7683E_OK)
-  {
-    elog_e(TAG, "Modem init failed: 0x%02X", status);
-    modem_fatal();
-  }
-  
-  elog_w(TAG, "ECM unavailable, falling back to PPP");
-  status = try_ppp_mode();
-  if (status != NX_SUCCESS)
-  {
-    elog_e(TAG, "PPP fallback also failed: 0x%02X", status);
-    modem_fatal();
-  }
+    //a7683e_power_on();
+    status = a7683e_init();
+    if (status != A7683E_OK)
+    {
+      elog_e(TAG, "Modem init failed: 0x%02X — retrying in 5s", status);
+      /* Clear serial so we re-wait for USB on next iteration.
+       * Don't call modem_fatal() — USB devices can have transient
+       * enumeration failures that resolve on retry. */
+      a7683e_set_serial(NULL);
+      app_netxduo_set_serial(NULL);
+      tx_thread_sleep(5000);
+      continue;
+    }
 
-  elog_i(TAG, "Using PPP mode (UART3)");
-  /* PPP read thread and NTP thread handle the rest */
+    elog_w(TAG, "ECM unavailable, falling back to PPP");
+    status = try_ppp_mode();
+    if (status != NX_SUCCESS)
+    {
+      elog_e(TAG, "PPP fallback failed: 0x%02X — retrying in 5s", status);
+      a7683e_set_serial(NULL);
+      app_netxduo_set_serial(NULL);
+      tx_thread_sleep(5000);
+      continue;
+    }
+
+    elog_i(TAG, "PPP mode active — waiting for USB disconnect...");
+
+    /* Block until USB disconnect event — unblocks when modem is unplugged */
+    app_netxduo_wait_disconnect();
+
+    /* Full cleanup: PPP, network, serial pointers */
+    modem_disconnect_cleanup();
+
+    /* Loop back: wait for USB serial to become available again */
+  }
 }
 
 /**

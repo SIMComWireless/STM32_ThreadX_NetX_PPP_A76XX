@@ -926,9 +926,7 @@
 /* If set, the DHCP Client will not create its own packet pool. The host
    application must use the nx_dhcp_packet_pool_set service to set the DHCP
    Client packet pool. The default value is disabled. */
-/*
 #define NX_DHCP_CLIENT_USER_CREATE_PACKET_POOL
-*/
 
 /* Defined, this enables the DHCP Client to send an ARP probe after IP
    address assignment to verify the assigned DHCP address is not owned by
@@ -1831,31 +1829,33 @@
 */
 
 /* Enable PPP compression (ACFC + PFC) */
-//#define NX_PPP_COMPRESSION_ENABLE
+#define NX_PPP_COMPRESSION_ENABLE
 
 /* Enable internal PPP debug log */
-//#define NX_PPP_DEBUG_log_eNABLE
+//#define NX_PPP_DEBUG_LOG_ENABLE
 
 /* Enable PPP debug log printf to stdio */
+#if defined(NX_PPP_DEBUG_LOG_ENABLE)
 #define NX_PPP_DEBUG_LOG_PRINT_ENABLE
+#endif
 
 /* PPP debug log size and frame dump size */
-#if defined(NX_PPP_DEBUG_log_eNABLE) && defined(NX_PPP_DEBUG_LOG_PRINT_ENABLE)
+#if defined(NX_PPP_DEBUG_LOG_ENABLE) && defined(NX_PPP_DEBUG_LOG_PRINT_ENABLE)
 #define NX_PPP_DEBUG_LOG_SIZE       128
 #define NX_PPP_DEBUG_FRAME_SIZE     128
-#endif /* NX_PPP_DEBUG_log_eNABLE && NX_PPP_DEBUG_LOG_PRINT_ENABLE */
+#endif /* NX_PPP_DEBUG_LOG_ENABLE && NX_PPP_DEBUG_LOG_PRINT_ENABLE */
 
-#define NX_PPP_BASE_TIMEOUT                                 (NX_IP_PERIODIC_RATE * 2)        /* 1 second  */
+#define NX_PPP_BASE_TIMEOUT                                 (NX_IP_PERIODIC_RATE * 1)        /* 1 second  */
 
 /* If defined, internal PPP CHAP logic is removed, including the MD5 digest logic.*/
-/*
+
 #define NX_PPP_DISABLE_CHAP
-*/
+
 
 /* If defined, internal PPP PAP logic is removed.*/
-/*
+
 #define NX_PPP_DISABLE_PAP
-*/
+
 
 /* If defined, the primary DNS Server Option is disabled in
    the IPCP response. By default this option is not defined.*/
@@ -2249,9 +2249,9 @@
    will function without any change if this option is defined. The HTTPS Server
    will need to either be modified or the user will have to create a handful of
    FileX services in order to function properly. */
-/*
+
 #define NX_WEB_HTTP_NO_FILEX
-*/
+
 
 /* The priority of the HTTPS Server thread. By default, this value is defined
    as 4 to specify priority 4. */

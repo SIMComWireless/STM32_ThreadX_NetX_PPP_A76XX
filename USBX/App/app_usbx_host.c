@@ -30,6 +30,7 @@
 #if A7683E_TRANSPORT == A7683E_TRANSPORT_USB
 #include "bsp_usb.h"
 #endif
+#include "app_netxduo.h"
 #include "elog.h"
 /* USER CODE END Includes */
 
@@ -207,9 +208,13 @@ void  usbx_app_thread_entry(ULONG arg)
 
     if (ux_dev_info.Dev_state == Device_connected)
     {
-      USBH_UsrLog("Modem connected, %lu interface(s) active",
+      USBH_UsrLog("=== Modem USB connected, %lu interface(s) active ===",
                    (unsigned long)ux_host_class_modem_count);
       modem_list_interfaces();
+
+      /* Initialize CDC-ECM IP instance and start DHCP.
+       * Idempotent — safe to call on every connect. */
+      app_netxduo_ecm_init();
 
 #if A7683E_TRANSPORT == A7683E_TRANSPORT_USB
       /* Wire the AT command port to the modem driver */
@@ -221,7 +226,8 @@ void  usbx_app_thread_entry(ULONG arg)
           extern void app_netxduo_set_serial(bsp_serial_t *serial);
           a7683e_set_serial(at_port);
           app_netxduo_set_serial(at_port);
-          USBH_UsrLog("AT port wired to ifnum=%d", A7683E_USB_AT_IFNUM);
+          USBH_UsrLog("AT port wired to ifnum=%d — modem thread can start",
+                       A7683E_USB_AT_IFNUM);
         }
         else
         {
@@ -233,6 +239,8 @@ void  usbx_app_thread_entry(ULONG arg)
     else if (ux_dev_info.Dev_state == Device_disconnected)
     {
       USBH_UsrLog("Modem disconnected");
+      /* Signal modem thread to start PPP cleanup and reconnect cycle */
+      app_netxduo_set_reconnect_event();
     }
   }
 }
@@ -255,10 +263,15 @@ UINT MX_USB_Host_Init(void)
     return UX_ERROR;
   }
 
+  /* Register error callback — catches USB disconnection events that
+   * UX_DEVICE_REMOVAL may miss (e.g. HCD-level disconnect detection) */
+  ux_utility_error_callback_register(ux_host_error_callback);
+
   /*
    * Register modem class — handles vendor-specific (0xFF) interfaces.
    * ECM/RNDIS interfaces are skipped in QUERY so CDC-ECM can claim them.
    */
+  
   if (ux_host_stack_class_register((UCHAR *)"modem", ux_host_class_modem_entry) != UX_SUCCESS)
   {
     elog_d(TAG_USBX, "FAIL: modem class register");
@@ -266,6 +279,7 @@ UINT MX_USB_Host_Init(void)
   }
   elog_d(TAG_USBX, "modem class registered");
 
+  #if 0
   /* Register CDC-ECM class for network-over-USB */
   if (ux_host_stack_class_register(_ux_system_host_class_cdc_ecm_name,
                                     _ux_host_class_cdc_ecm_entry) == UX_SUCCESS)
@@ -277,7 +291,7 @@ UINT MX_USB_Host_Init(void)
   {
     elog_e(TAG_USBX, "CDC-ECM class register failed — ECM interfaces will not work");
   }
-
+  #endif
   /* Initialize the LL driver */
   MX_USB_OTG_FS_USB_Init();
 
@@ -316,24 +330,20 @@ UINT MX_USB_Host_Init(void)
          VOID * Current_instance
 * @retval Status
 */
-/*
- * USB host event callback — handles modem interface insertion/removal.
- *
- * The modem class (ux_host_class_modem) handles per-interface activation.
- * Each activated interface gets its own UX_HOST_CLASS_MODEM instance.
- * The callback logs the event and tracks connection state.
- */
 UINT ux_host_event_callback(ULONG event, UX_HOST_CLASS *Current_class, VOID *Current_instance)
 {
   UX_HOST_CLASS_MODEM *modem;
 
-  /* Only handle events from our modem class — ignore CDC-ECM and others. */
-  if (Current_class != ux_host_class_modem_class_ptr)
-    return (UINT) UX_SUCCESS;
-
   switch (event)
   {
     case UX_DEVICE_INSERTION :
+
+     if (ux_host_class_cdc_ecm_entry == Current_class->ux_host_class_entry_function)
+      {
+          USBH_UsrLog("USB CDC_ECM Detected");
+          break;
+      }
+
       modem = (UX_HOST_CLASS_MODEM *)Current_instance;
       if (modem == NULL)
         break;
@@ -343,30 +353,41 @@ UINT ux_host_event_callback(ULONG event, UX_HOST_CLASS *Current_class, VOID *Cur
                    (unsigned)ux_host_class_modem_ifnum(modem),
                    (void *)modem->bulk_in, (void *)modem->bulk_out);
 
-      /* First usable interface → mark app ready */
-      if (ux_app_state != App_Ready)
-      {
-        ux_app_state = App_Ready;
-        ux_dev_info.Device_Type = Modem_Device;
-        tx_queue_send(&ux_app_MsgQueue, &ux_dev_info, TX_NO_WAIT);
-      }
+      /* Send queue message to unblock usbx_app_thread on every activation.
+       * On re-enumeration (e.g. after MCU reset or USB reconnect),
+       * ux_app_state may still be App_Ready — the queue message is still
+       * needed so the app thread can re-wire the serial port to the
+       * latest modem instance. */
+      ux_app_state = App_Ready;
+      ux_dev_info.Device_Type = Modem_Device;
+      tx_queue_send(&ux_app_MsgQueue, &ux_dev_info, TX_NO_WAIT);
       break;
 
     case UX_DEVICE_REMOVAL :
+
       modem = (UX_HOST_CLASS_MODEM *)Current_instance;
       if (modem == NULL)
+      {
+        USBH_UsrLog("USB device removed (non-modem)");
         break;
+      }
 
-      USBH_UsrLog("Modem interface ifnum=%u removed",
-                   (unsigned)ux_host_class_modem_ifnum(modem));
+      USBH_UsrLog("Modem interface ifnum=%u removed [%lu remaining]",
+                   (unsigned)ux_host_class_modem_ifnum(modem),
+                   (unsigned long)(ux_host_class_modem_count > 0
+                                   ? ux_host_class_modem_count - 1 : 0));
 
       /* If all instances gone, mark disconnected */
       if (ux_host_class_modem_count == 0)
       {
+        USBH_UsrLog("All modem interfaces removed — signaling reconnect");
         ux_app_state = App_Idle;
         ux_dev_info.Dev_state   = Device_disconnected;
         ux_dev_info.Device_Type = Modem_Device;
         tx_queue_send(&ux_app_MsgQueue, &ux_dev_info, TX_NO_WAIT);
+
+        /* Signal modem thread to start PPP cleanup and reconnect cycle */
+        app_netxduo_set_reconnect_event();
       }
       break;
 
@@ -397,6 +418,10 @@ VOID ux_host_error_callback(UINT system_level, UINT system_context, UINT error_c
 
     case UX_NO_DEVICE_CONNECTED :
       USBH_UsrLog("USB Device disconnected");
+      /* Signal modem thread to start PPP cleanup and reconnect cycle.
+       * This is the primary disconnect detection path — UX_DEVICE_REMOVAL
+       * callback may not fire for all class instances. */
+      app_netxduo_set_reconnect_event();
       break;
 
     default:

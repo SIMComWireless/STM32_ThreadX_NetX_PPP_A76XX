@@ -113,8 +113,9 @@ void HAL_HCD_MspInit(HCD_HandleTypeDef* hhcd)
     {
       HAL_PWREx_EnableVddUSB();
     }
-    /* USB_OTG_FS interrupt Init */
-    HAL_NVIC_SetPriority(OTG_FS_IRQn, 6, 0);
+    /* USB_OTG_FS interrupt Init — priority 1 (high, just below UART/DMA at 0)
+     * to prevent USB transaction drops during heavy UART traffic in PPP mode. */
+    HAL_NVIC_SetPriority(OTG_FS_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
   /* USER CODE BEGIN USB_OTG_FS_MspInit 1 */
 

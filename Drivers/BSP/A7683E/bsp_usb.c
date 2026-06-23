@@ -135,6 +135,23 @@ bsp_serial_t *bsp_usb_get(uint8_t ifnum)
         return NULL;
     }
 
+    /* Stop stale async RX if the modem instance was replaced (re-enumeration).
+     * The old instance's RX was stopped during modem_activate_one REPLACE,
+     * but the bsp_usb cached pointer may still reference the old instance.
+     * This check ensures we don't start RX on a shutdown instance. */
+    if (ifnum == 4 && usb_if4_modem != NULL && usb_if4_modem != modem)
+    {
+        elog_w(TAG, "ifnum=4 modem changed (%p -> %p) — clearing stale pointer",
+               (void *)usb_if4_modem, (void *)modem);
+        usb_if4_modem = NULL;
+    }
+    else if (ifnum == 5 && usb_if5_modem != NULL && usb_if5_modem != modem)
+    {
+        elog_w(TAG, "ifnum=5 modem changed (%p -> %p) — clearing stale pointer",
+               (void *)usb_if5_modem, (void *)modem);
+        usb_if5_modem = NULL;
+    }
+
     /* Start async reception if not already started */
     if (modem->rx_state == UX_HOST_CLASS_MODEM_RX_STOPPED)
     {
@@ -156,19 +173,19 @@ bsp_serial_t *bsp_usb_get(uint8_t ifnum)
         }
     }
 
-    /* Map to the correct bsp_serial_t */
+    /* Map to the correct bsp_serial_t — always update to latest modem instance */
     if (ifnum == 4)
     {
         usb_if4_modem = modem;
         serial_if4.user_data = modem;
-        elog_i(TAG, "ifnum=4 ready");
+        elog_i(TAG, "ifnum=4 ready (modem=%p)", (void *)modem);
         return &serial_if4;
     }
     else if (ifnum == 5)
     {
         usb_if5_modem = modem;
         serial_if5.user_data = modem;
-        elog_i(TAG, "ifnum=5 ready");
+        elog_i(TAG, "ifnum=5 ready (modem=%p)", (void *)modem);
         return &serial_if5;
     }
 
@@ -188,5 +205,25 @@ void bsp_usb_init_all(void)
         elog_i(TAG, "  ifnum=%lu bulk_in=%p bulk_out=%p",
               (unsigned long)ux_host_class_modem_ifnum(m),
               (void *)m->bulk_in, (void *)m->bulk_out);
+    }
+}
+
+/**
+ * @brief  Notify BSP USB that a modem interface was deactivated.
+ *         Clears the cached modem pointer to prevent use-after-free.
+ *         Called from ux_host_class_modem DEACTIVATE handler before
+ *         the instance memory is freed.
+ */
+void bsp_usb_notify_deactivated(uint8_t ifnum)
+{
+    if (ifnum == 4 && usb_if4_modem != NULL)
+    {
+        elog_w(TAG, "ifnum=4 deactivated — clearing modem pointer");
+        usb_if4_modem = NULL;
+    }
+    else if (ifnum == 5 && usb_if5_modem != NULL)
+    {
+        elog_w(TAG, "ifnum=5 deactivated — clearing modem pointer");
+        usb_if5_modem = NULL;
     }
 }
