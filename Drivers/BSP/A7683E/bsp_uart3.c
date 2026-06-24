@@ -121,8 +121,9 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 
 /* ---------- bsp_serial_t implementation ---------------------------------- */
 
-static void uart3_init(void)
+static void uart3_init(bsp_serial_t *self)
 {
+    (void)self;
     if (initialized) return;
 
     tx_event_flags_create(&rx_events, "UART3 RX Events");
@@ -143,8 +144,9 @@ static void uart3_init(void)
     initialized = 1;
 }
 
-static uint16_t uart3_read(uint8_t *buf, uint16_t len, uint32_t timeout_ms)
+static uint16_t uart3_read(bsp_serial_t *self, uint8_t *buf, uint16_t len, uint32_t timeout_ms)
 {
+    (void)self;
     uint32_t got = lwrb_read(&uart3_rb, buf, len);
     if (got > 0 || timeout_ms == 0) return (uint16_t)got;
 
@@ -159,8 +161,9 @@ static uint16_t uart3_read(uint8_t *buf, uint16_t len, uint32_t timeout_ms)
     return (uint16_t)lwrb_read(&uart3_rb, buf, len);
 }
 
-static void uart3_write(const uint8_t *data, uint16_t len)
+static void uart3_write(bsp_serial_t *self, const uint8_t *data, uint16_t len)
 {
+    (void)self;
     if (len == 0) return;
 
     #if BSP_UART3_DEBUG
@@ -183,8 +186,9 @@ static void uart3_write(const uint8_t *data, uint16_t len)
     /* DMA started successfully — HAL_UART_TxCpltCallback will release semaphore */
 }
 
-static uint16_t uart3_rx_available(void)
+static uint16_t uart3_rx_available(bsp_serial_t *self)
 {
+    (void)self;
     return (uint16_t)lwrb_get_full(&uart3_rb);
 }
 

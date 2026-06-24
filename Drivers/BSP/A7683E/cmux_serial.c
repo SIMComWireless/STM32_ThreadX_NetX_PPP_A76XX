@@ -62,22 +62,29 @@ static void dlci_rx_callback(uint8_t dlci, const uint8_t *data, uint16_t len)
  *   cmux_read_1()  / cmux_write_1()   — DLCI 2
  *   ...
  */
-#define DEFINE_DLCI_IO(n)                                                       \
-static uint16_t cmux_read_##n(uint8_t *buf, uint16_t len, uint32_t timeout_ms)  \
-{                                                                               \
-    dlci_ctx_t *ctx = &g_ctx[n];                                                \
-    while (lwrb_get_full(&ctx->rx_ring) == 0) {                                 \
-        ULONG flags;                                                            \
-        if (tx_event_flags_get(&ctx->events, 0x01, TX_OR_CLEAR, &flags,        \
-                               timeout_ms ? timeout_ms : TX_WAIT_FOREVER)       \
-            != TX_SUCCESS) return 0;                                            \
-    }                                                                           \
-    return (uint16_t)lwrb_read(&ctx->rx_ring, buf, len);                        \
-}                                                                               \
-static void cmux_write_##n(const uint8_t *data, uint16_t len)                   \
-{                                                                               \
-    if (cmux_is_active(&g_cmux))                                                \
-        cmux_send(&g_cmux, (n) + 1, data, len);                                \
+
+/* Stub implementations for init/rx_available (CMUX uses event-driven read) */
+static void cmux_port_init_stub(bsp_serial_t *self) { (void)self; }
+static uint16_t cmux_port_rx_avail_stub(bsp_serial_t *self) { (void)self; return 0; }
+#define DEFINE_DLCI_IO(n)                                                                    \
+static uint16_t cmux_read_##n(bsp_serial_t *self, uint8_t *buf, uint16_t len, uint32_t timeout_ms) \
+{                                                                                             \
+    (void)self;                                                                               \
+    dlci_ctx_t *ctx = &g_ctx[n];                                                              \
+    while (lwrb_get_full(&ctx->rx_ring) == 0) {                                               \
+        if (timeout_ms == 0) return 0;                                                        \
+        ULONG flags;                                                                          \
+        ULONG ticks = (timeout_ms == UINT32_MAX) ? TX_WAIT_FOREVER : timeout_ms;              \
+        if (tx_event_flags_get(&ctx->events, 0x01, TX_OR_CLEAR, &flags, ticks)                \
+            != TX_SUCCESS) return 0;                                                          \
+    }                                                                                         \
+    return (uint16_t)lwrb_read(&ctx->rx_ring, buf, len);                                      \
+}                                                                                             \
+static void cmux_write_##n(bsp_serial_t *self, const uint8_t *data, uint16_t len)             \
+{                                                                                             \
+    (void)self;                                                                               \
+    if (cmux_is_active(&g_cmux))                                                              \
+        cmux_send(&g_cmux, (n) + 1, data, len);                                              \
 }
 
 /* 按 CMUX_NUM_CHANNELS 生成，增减通道只需改 cmux.h 里的宏 */
@@ -93,7 +100,7 @@ DEFINE_DLCI_IO(3)   /* DLCI 4 */
 #endif
 
 /* 函数指针表 — 按 DLCI 索引（0=DLCI1, 1=DLCI2, ...） */
-static uint16_t (*const read_fn[])(uint8_t *, uint16_t, uint32_t) = {
+static uint16_t (*const read_fn[])(bsp_serial_t *, uint8_t *, uint16_t, uint32_t) = {
     cmux_read_0,
 #if CMUX_NUM_CHANNELS >= 2
     cmux_read_1,
@@ -106,7 +113,7 @@ static uint16_t (*const read_fn[])(uint8_t *, uint16_t, uint32_t) = {
 #endif
 };
 
-static void (*const write_fn[])(const uint8_t *, uint16_t) = {
+static void (*const write_fn[])(bsp_serial_t *, const uint8_t *, uint16_t) = {
     cmux_write_0,
 #if CMUX_NUM_CHANNELS >= 2
     cmux_write_1,
@@ -142,9 +149,11 @@ void cmux_serial_init_all(void)
 
         /* 绑定串口 */
         memset(serial, 0, sizeof(*serial));
-        serial->name  = "CMUX";
-        serial->read  = read_fn[i];
-        serial->write = write_fn[i];
+        serial->name         = "CMUX";
+        serial->read         = read_fn[i];
+        serial->write        = write_fn[i];
+        serial->init         = cmux_port_init_stub;
+        serial->rx_available = cmux_port_rx_avail_stub;
 
         /* 注册 CMUX 帧回调 — cmux_feed 解析后调 dlci_rx_callback 写 ringbuf */
         cmux_set_rx_callback(&g_cmux, i + 1, dlci_rx_callback);

@@ -47,9 +47,9 @@ static char resp_buf[A7683E_RESP_BUF_SIZE];
 static void flush_rx(void)
 {
     uint8_t tmp[64];
-    while (modem_serial && modem_serial->rx_available() > 0)
+    while (modem_serial && modem_serial->rx_available(modem_serial) > 0)
     {
-        modem_serial->read(tmp, sizeof(tmp), 0);
+        modem_serial->read(modem_serial, tmp, sizeof(tmp), 0);
     }
 }
 
@@ -84,7 +84,7 @@ static UINT wait_for_response(const char *keyword, char *buf, uint16_t buf_size,
     while (tx_time_get() < deadline)
     {
         /* Read available bytes (up to remaining buffer space) */
-        uint16_t n = modem_serial->read((uint8_t *)buf + pos, buf_size - 1 - pos, 50);
+        uint16_t n = modem_serial->read(modem_serial, (uint8_t *)buf + pos, buf_size - 1 - pos, 50);
         if (n == 0) continue;
         pos += n;
         buf[pos] = '\0';
@@ -165,7 +165,7 @@ UINT a7683e_escape_cmux(void)
     };
     for (uint8_t i = 0; i < 3; i++)
     {
-        modem_serial->write(disc_frames[i], 6);
+        modem_serial->write(modem_serial, disc_frames[i], 6);
         elog_d(TAG, "DISC sent on DLCI %u", i);
     }
 
@@ -176,9 +176,9 @@ UINT a7683e_escape_cmux(void)
 
     /* Verify we're back in AT mode */
     flush_rx();
-    modem_serial->write((const uint8_t *)"AT\r", 3);
+    modem_serial->write(modem_serial, (const uint8_t *)"AT\r", 3);
     char buf[64] = {0};
-    uint16_t n = modem_serial->read((uint8_t *)buf, sizeof(buf) - 1, 1000);
+    uint16_t n = modem_serial->read(modem_serial, (uint8_t *)buf, sizeof(buf) - 1, 1000);
     if (n > 0 && strstr(buf, "OK"))
     {
         elog_d(TAG, "Modem back in AT mode");
@@ -207,10 +207,10 @@ UINT a7683e_escape_ppp(void)
      * ≥1s silence → +++ → ≥1s silence → then commands */
     flush_rx();
     tx_thread_sleep(1100);  /* Pre-guard: ≥1s silence before +++ (V.250) */
-    modem_serial->write((const uint8_t *)"+++", 3);
+    modem_serial->write(modem_serial, (const uint8_t *)"+++", 3);
     tx_thread_sleep(1100);  /* Post-guard: ≥1s silence after +++ (V.250) */
     char esc_buf[64] = {0};
-    uint16_t got = modem_serial->read((uint8_t *)esc_buf, sizeof(esc_buf) - 1, 1000);
+    uint16_t got = modem_serial->read(modem_serial, (uint8_t *)esc_buf, sizeof(esc_buf) - 1, 1000);
     if (got > 0 && strstr(esc_buf, "OK"))
     {
         elog_d(TAG, "Modem was in PPP mode, hanging up...");
@@ -237,7 +237,7 @@ UINT a7683e_sync(void)
     for (int i = 0; i < 5; i++)
     {
         flush_rx();
-        modem_serial->write((const uint8_t *)"AT\r", 3);
+        modem_serial->write(modem_serial, (const uint8_t *)"AT\r", 3);
         UINT status = wait_for_response("OK", resp_buf, sizeof(resp_buf), 1000);
         if (status == A7683E_OK)
         {
@@ -282,9 +282,9 @@ void a7683e_power_off(void)
 UINT a7683e_send_at(const char *cmd, char *resp, uint16_t resp_len, uint32_t timeout_ms)
 {
     if (!modem_serial) return A7683E_ERROR;
-
+#if !AT_THROUGHPUT_TEST_ENABLE
     elog_d(TAG, "TX: %s", cmd);
-
+#endif
     flush_rx();
 
     /* Send command — auto-append \r if not present.
@@ -292,7 +292,7 @@ UINT a7683e_send_at(const char *cmd, char *resp, uint16_t resp_len, uint32_t tim
     size_t cmd_len = strlen(cmd);
     if (cmd_len > 0 && cmd[cmd_len - 1] == '\r')
     {
-        modem_serial->write((const uint8_t *)cmd, cmd_len);
+        modem_serial->write(modem_serial, (const uint8_t *)cmd, cmd_len);
     }
     else
     {
@@ -300,14 +300,16 @@ UINT a7683e_send_at(const char *cmd, char *resp, uint16_t resp_len, uint32_t tim
         if (cmd_len + 1 > sizeof(cmd_buf)) return A7683E_ERROR;
         memcpy(cmd_buf, cmd, cmd_len);
         cmd_buf[cmd_len] = '\r';
-        modem_serial->write(cmd_buf, cmd_len + 1);
+        modem_serial->write(modem_serial, cmd_buf, cmd_len + 1);
     }
 
     UINT status = wait_for_response("OK", resp, resp_len, timeout_ms);
 
     if (status == A7683E_OK)
     {
-        elog_d(TAG, "RX: %s", resp);
+        #if !AT_THROUGHPUT_TEST_ENABLE
+            elog_d(TAG, "RX: %s", resp);
+        #endif
     }
 
     return status;
@@ -567,7 +569,7 @@ UINT a7683e_ppp_dial(void)
 
     elog_d(TAG, "Dialing PPP (ATD*99***1#)...");
     flush_rx();
-    modem_serial->write((const uint8_t *)"ATD*99***1#\r", 12);
+    modem_serial->write(modem_serial, (const uint8_t *)"ATD*99***1#\r", 12);
 
     UINT status = wait_for_response("CONNECT", resp, sizeof(resp), 30000);
 
@@ -639,7 +641,7 @@ UINT a7683e_cmux_start(void)
     flush_rx();
     {
         const char *at_cmd = "AT+CMUX=0\r";
-        modem_serial->write((const uint8_t *)at_cmd, strlen(at_cmd));
+        modem_serial->write(modem_serial, (const uint8_t *)at_cmd, strlen(at_cmd));
     }
 
     /* Wait for OK — after OK, modem immediately enters CMUX mode and sends
@@ -653,7 +655,7 @@ UINT a7683e_cmux_start(void)
 
         while (tx_time_get() < deadline)
         {
-            uint16_t n = modem_serial->read((uint8_t *)cmux_resp + pos,
+            uint16_t n = modem_serial->read(modem_serial, (uint8_t *)cmux_resp + pos,
                                             sizeof(cmux_resp) - 1 - pos, 50);
             pos += n;
             cmux_resp[pos] = '\0';

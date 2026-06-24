@@ -45,9 +45,10 @@ extern "C" {
 
 #define TX_APP_MEM_POOL_SIZE                     1024*4
 
-#define NX_APP_MEM_POOL_SIZE                     65536
+/* 80KB: 60KB packet pool + 16KB IP/stacks/ARP + margin */
+#define NX_APP_MEM_POOL_SIZE                     (1024*150)
 
-/* 160KB: 128KB USBX system + 6KB threads + 26KB ECM/NetX resources + margin */
+/* 160KB: 128KB USBX system + 6KB threads + 26KB NetX resources + margin */
 #define UX_HOST_APP_MEM_POOL_SIZE                1024*200
 
 /* USER CODE BEGIN EC */

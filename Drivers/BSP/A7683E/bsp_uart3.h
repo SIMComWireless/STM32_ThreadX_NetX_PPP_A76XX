@@ -26,9 +26,10 @@ extern "C" {
 #define BSP_UART3_RX_BUF_SIZE       512
 #endif
 
-/** Ring buffer size (must be >= RX_BUF_SIZE) */
+/** Ring buffer size (must be >= RX_BUF_SIZE).
+ *  4096 bytes — large enough to absorb scheduling jitter in ppp_read_thread. */
 #ifndef BSP_UART3_RING_BUF_SIZE
-#define BSP_UART3_RING_BUF_SIZE     (BSP_UART3_RX_BUF_SIZE * 2)
+#define BSP_UART3_RING_BUF_SIZE     4096
 #endif
 
 #define BSP_UART3_DEBUG             1

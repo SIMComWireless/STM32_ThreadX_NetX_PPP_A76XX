@@ -113,7 +113,7 @@ static void cmux_rx_isr_hook(const uint8_t *data, uint16_t len)
 void cmux_port_write(const uint8_t *data, uint16_t len)
 {
     if (len == 0 || !bsp_serial_uart3) return;
-    bsp_serial_uart3->write(data, len);
+    bsp_serial_uart3->write(bsp_serial_uart3, data, len);
 }
 
 /* ---------- Bridge API --------------------------------------------------- */

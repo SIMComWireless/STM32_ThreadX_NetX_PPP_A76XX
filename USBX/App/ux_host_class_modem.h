@@ -30,8 +30,11 @@ extern "C" {
 #ifndef UX_HOST_CLASS_MODEM_VID
 #define UX_HOST_CLASS_MODEM_VID                         0x1E0E
 #endif
-#ifndef UX_HOST_CLASS_MODEM_PID
-#define UX_HOST_CLASS_MODEM_PID                         0x9011
+
+/* Supported PID list — add new module PIDs here */
+#ifndef UX_HOST_CLASS_MODEM_PID_LIST
+#define UX_HOST_CLASS_MODEM_PID_LIST                    { 0x9011, 0x9028 }
+#define UX_HOST_CLASS_MODEM_PID_COUNT                   2
 #endif
 
 /* Configuration */
@@ -64,6 +67,7 @@ typedef struct UX_HOST_CLASS_MODEM_STRUCT
     UX_ENDPOINT                         *bulk_in;
     UX_ENDPOINT                         *bulk_out;
     UX_SEMAPHORE                         semaphore;
+    UX_SEMAPHORE                         rx_data_sem;     /* signaled on data arrival  */
     UINT                                 state;
 
     /* Async reception (non-blocking, callback → lwrb) */
@@ -82,6 +86,7 @@ typedef struct UX_HOST_CLASS_MODEM_STRUCT
 extern UX_HOST_CLASS_MODEM  *ux_host_class_modem_instances[];
 extern ULONG                 ux_host_class_modem_count;
 extern UX_HOST_CLASS        *ux_host_class_modem_class_ptr;
+extern ULONG                 ux_host_class_modem_detected_pid;  /* PID of connected module */
 
 /* ------------------------------------------------------------------ */
 /*  API                                                                */

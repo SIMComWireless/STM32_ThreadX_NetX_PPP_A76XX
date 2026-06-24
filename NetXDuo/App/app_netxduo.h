@@ -77,21 +77,6 @@ UINT app_netxduo_create_ppp(void);
 UINT app_netxduo_start_ppp(void);
 
 /**
- * @brief  Initialize CDC-ECM IP instance and start DHCP
- * @note   Creates a second NX_IP using _ux_network_driver_entry for CDC-ECM.
- *         Idempotent — safe to call multiple times. Can be called before or
- *         after CDC-ECM link-up; DHCP thread will wait for link.
- * @return NX_SUCCESS on success
- */
-UINT app_netxduo_ecm_init(void);
-
-/**
- * @brief  Destroy CDC-ECM IP instance and release resources.
- *         Call on USB disconnect to prevent resource leaks on reconnect.
- */
-void app_netxduo_ecm_destroy(void);
-
-/**
  * @brief  Destroy PPP instance and release all associated resources.
  *         Call on USB disconnect to clean up before reconnection.
  *         After this call, app_netxduo_create_ppp() can be called again.

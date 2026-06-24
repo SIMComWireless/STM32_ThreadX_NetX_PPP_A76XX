@@ -4,7 +4,7 @@
   * @brief   USB modem serial backend — bsp_serial_t interface over USB
   ******************************************************************************
   * @note
-  *   Provides bsp_serial_t instances for USB modem interfaces (ifnum 4/5).
+  *   Provides bsp_serial_t instances for USB modem interfaces (ifnum 1/4/5).
   *   Reception is async via lwrb (USB bulk IN callback writes to ring buffer).
   *   Transmit is blocking via ux_host_class_modem_write.
   *
@@ -27,14 +27,15 @@ extern "C" {
 #include "bsp_serial.h"
 #include <stdint.h>
 
-/** RX ring buffer size per interface */
+/** RX ring buffer size per interface — must be > block_size to avoid overflow */
 #ifndef BSP_USB_RX_RB_SIZE
-#define BSP_USB_RX_RB_SIZE      2048
+#define BSP_USB_RX_RB_SIZE      8192
 #endif
 
-/** USB bulk IN transfer block size */
+/** USB bulk IN transfer block size — larger = fewer transfers = less overhead.
+ *  FS bulk MPS=64, so 4096 = 64 packets per transfer (was 512 = 8 packets). */
 #ifndef BSP_USB_RX_BLOCK_SIZE
-#define BSP_USB_RX_BLOCK_SIZE   512
+#define BSP_USB_RX_BLOCK_SIZE   4096
 #endif
 
 /**
@@ -58,6 +59,14 @@ void bsp_usb_init_all(void);
  * @param  ifnum  USB interface number that was deactivated
  */
 void bsp_usb_notify_deactivated(uint8_t ifnum);
+
+/**
+ * @brief  USB bulk throughput test — sends large buffers for a fixed duration
+ *         and measures actual USB bulk TX transfer rate.
+ * @param  ifnum       USB interface number to test (e.g. 5 for modem data port)
+ * @param  duration_s  Test duration in seconds
+ */
+void bsp_usb_throughput_test(uint8_t ifnum, uint32_t duration_s);
 
 #ifdef __cplusplus
 }

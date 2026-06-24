@@ -26,6 +26,10 @@
 UX_HOST_CLASS_MODEM  *ux_host_class_modem_instances[UX_HOST_CLASS_MODEM_MAX_INSTANCES];
 ULONG                 ux_host_class_modem_count = 0;
 UX_HOST_CLASS        *ux_host_class_modem_class_ptr = UX_NULL;
+ULONG                 ux_host_class_modem_detected_pid = 0;
+
+/* Supported PID list */
+static const ULONG modem_pid_list[] = UX_HOST_CLASS_MODEM_PID_LIST;
 
 /* ---------- Internal helpers ----------------------------------------- */
 
@@ -110,6 +114,7 @@ static UINT modem_activate_one(UX_HOST_CLASS_MODEM *modem)
                 ux_host_class_modem_reception_stop(old);
 
             old->state = UX_HOST_CLASS_MODEM_STATE_SHUTDOWN;
+            _ux_host_semaphore_delete(&old->rx_data_sem);
             _ux_host_semaphore_delete(&old->semaphore);
             _ux_host_stack_class_instance_destroy(old->class_ptr, (VOID *)old);
 
@@ -139,6 +144,11 @@ activate:
     if (status != UX_SUCCESS)
         return status;
 
+    /* Data-available semaphore — posted by RX callback, waited by read() */
+    status = _ux_host_semaphore_create(&modem->rx_data_sem, "ux_modem_rx", 0);
+    if (status != UX_SUCCESS)
+        return status;
+
     _ux_host_stack_class_instance_create(modem->class_ptr, (VOID *)modem);
     modem->state = UX_HOST_CLASS_MODEM_STATE_LIVE;
 
@@ -164,8 +174,31 @@ UINT ux_host_class_modem_entry(UX_HOST_CLASS_COMMAND *command)
             UINT cls = command->ux_host_class_command_class;
 
             /* Match vendor-specific interfaces only */
-            if (cls == 0xFF)
-                return UX_SUCCESS;
+            if (cls != 0xFF)
+                return UX_NO_CLASS_MATCH;
+
+            /* Check VID/PID from device descriptor */
+            {
+                UX_INTERFACE *iface = (UX_INTERFACE *)command->ux_host_class_command_container;
+                UX_DEVICE *device = iface->ux_interface_configuration->ux_configuration_device;
+                ULONG vid = device->ux_device_descriptor.idVendor;
+                ULONG pid = device->ux_device_descriptor.idProduct;
+                ULONG i;
+
+                if (vid != UX_HOST_CLASS_MODEM_VID)
+                    return UX_NO_CLASS_MATCH;
+
+                for (i = 0; i < UX_HOST_CLASS_MODEM_PID_COUNT; i++)
+                {
+                    if (pid == modem_pid_list[i])
+                    {
+                        /* Store detected PID for application use */
+                        ux_host_class_modem_detected_pid = pid;
+                        elog_d(TAG, "MATCH VID=0x%04lX PID=0x%04lX", vid, pid);
+                        return UX_SUCCESS;
+                    }
+                }
+            }
         }
         return UX_NO_CLASS_MATCH;
 
@@ -249,6 +282,7 @@ UINT ux_host_class_modem_entry(UX_HOST_CLASS_COMMAND *command)
             if (modem->bulk_in)
                 _ux_host_stack_endpoint_transfer_abort(modem->bulk_in);
 
+            _ux_host_semaphore_delete(&modem->rx_data_sem);
             _ux_host_semaphore_delete(&modem->semaphore);
             _ux_host_stack_class_instance_destroy(modem->class_ptr, (VOID *)modem);
 
@@ -443,7 +477,11 @@ static VOID modem_rx_callback(UX_TRANSFER *transfer_request)
 
     actual = transfer_request->ux_transfer_request_actual_length;
     if (actual > 0)
+    {
         lwrb_write(&modem->rx_rb, modem->rx_xfer_buf, actual);
+        /* Signal waiting read() that data is available */
+        _ux_host_semaphore_put(&modem->rx_data_sem);
+    }
 
     /* Re-arm only if not aborting (double-check after potential ISR preemption) */
     if (modem->rx_aborting)

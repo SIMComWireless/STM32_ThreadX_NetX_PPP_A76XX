@@ -1856,6 +1856,8 @@
 
 #define NX_PPP_DISABLE_PAP
 
+#define NX_FTP_NO_FILEX
+
 
 /* If defined, the primary DNS Server Option is disabled in
    the IPCP response. By default this option is not defined.*/

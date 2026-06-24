@@ -24,8 +24,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ux_host_class_modem.h"
-#include "ux_host_class_cdc_ecm.h"
-#include "ux_network_driver.h"
 #include "a7683e.h"
 #if A7683E_TRANSPORT == A7683E_TRANSPORT_USB
 #include "bsp_usb.h"
@@ -212,26 +210,25 @@ void  usbx_app_thread_entry(ULONG arg)
                    (unsigned long)ux_host_class_modem_count);
       modem_list_interfaces();
 
-      /* Initialize CDC-ECM IP instance and start DHCP.
-       * Idempotent — safe to call on every connect. */
-      app_netxduo_ecm_init();
-
 #if A7683E_TRANSPORT == A7683E_TRANSPORT_USB
-      /* Wire the AT command port to the modem driver */
+      /* Wire the AT command port to the modem driver.
+       * AT port interface depends on the detected PID. */
       {
-        bsp_serial_t *at_port = bsp_usb_get(A7683E_USB_AT_IFNUM);
+        int at_ifnum = app_usbx_get_at_ifnum();
+        bsp_serial_t *at_port = bsp_usb_get(at_ifnum);
         if (at_port)
         {
           extern void a7683e_set_serial(bsp_serial_t *serial);
           extern void app_netxduo_set_serial(bsp_serial_t *serial);
           a7683e_set_serial(at_port);
           app_netxduo_set_serial(at_port);
-          USBH_UsrLog("AT port wired to ifnum=%d — modem thread can start",
-                       A7683E_USB_AT_IFNUM);
+          USBH_UsrLog("AT port wired to ifnum=%d (PID=0x%04lX) — modem thread can start",
+                       at_ifnum, ux_host_class_modem_detected_pid);
         }
         else
         {
-          USBH_ErrLog("AT port ifnum=%d not found!", A7683E_USB_AT_IFNUM);
+          USBH_ErrLog("AT port ifnum=%d not found! (PID=0x%04lX)",
+                       at_ifnum, ux_host_class_modem_detected_pid);
         }
       }
 #endif
@@ -267,10 +264,7 @@ UINT MX_USB_Host_Init(void)
    * UX_DEVICE_REMOVAL may miss (e.g. HCD-level disconnect detection) */
   ux_utility_error_callback_register(ux_host_error_callback);
 
-  /*
-   * Register modem class — handles vendor-specific (0xFF) interfaces.
-   * ECM/RNDIS interfaces are skipped in QUERY so CDC-ECM can claim them.
-   */
+  /* Register modem class — handles vendor-specific (0xFF) interfaces. */
   
   if (ux_host_stack_class_register((UCHAR *)"modem", ux_host_class_modem_entry) != UX_SUCCESS)
   {
@@ -279,19 +273,6 @@ UINT MX_USB_Host_Init(void)
   }
   elog_d(TAG_USBX, "modem class registered");
 
-  #if 0
-  /* Register CDC-ECM class for network-over-USB */
-  if (ux_host_stack_class_register(_ux_system_host_class_cdc_ecm_name,
-                                    _ux_host_class_cdc_ecm_entry) == UX_SUCCESS)
-  {
-    _ux_network_driver_init();
-    elog_d(TAG_USBX, "CDC-ECM class registered");
-  }
-  else
-  {
-    elog_e(TAG_USBX, "CDC-ECM class register failed — ECM interfaces will not work");
-  }
-  #endif
   /* Initialize the LL driver */
   MX_USB_OTG_FS_USB_Init();
 
@@ -337,12 +318,6 @@ UINT ux_host_event_callback(ULONG event, UX_HOST_CLASS *Current_class, VOID *Cur
   switch (event)
   {
     case UX_DEVICE_INSERTION :
-
-     if (ux_host_class_cdc_ecm_entry == Current_class->ux_host_class_entry_function)
-      {
-          USBH_UsrLog("USB CDC_ECM Detected");
-          break;
-      }
 
       modem = (UX_HOST_CLASS_MODEM *)Current_instance;
       if (modem == NULL)

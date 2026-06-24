@@ -33,8 +33,6 @@
 #include "bsp_serial.h"
 #include "main.h"
 #include "rtc.h"
-#include "ux_network_driver.h"
-#include "nxd_dhcp_client.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -114,38 +112,40 @@ static void unix_to_ymd(uint32_t unix_time, uint32_t *year, uint32_t *month, uin
 #define NTP_THREAD_PRIO         31
 #define NTP_THREAD_STACK        1024*3
 
-/** Packet pool configuration */
-#define PACKET_POOL_SIZE        4096*5
+/** Packet pool configuration — must be large enough for TCP window + PPP overhead.
+ *  4096*30 = 122880 bytes ≈ 80 packets of 1536 bytes each.
+ *  TCP needs many in-flight packets; too small → send blocks on pool exhaustion. */
+#define PACKET_POOL_SIZE        (4096*30)
 #define PACKET_PAYLOAD_SIZE     1536    /* Slightly larger than PPP MTU (1500) */
 
 /** PPP thread stack size */
 #define PPP_THREAD_STACK_SIZE   1024
 
-/** TCP/UDP client configuration — change these to match your server */
-#ifndef TCP_SERVER_HOST
-#define TCP_SERVER_HOST         "47.109.101.196"
+/** iperf TX test server configuration — change these to match your iperf server */
+#ifndef IPERF_TCP_SERVER_HOST
+#define IPERF_TCP_SERVER_HOST   "47.109.101.196"
 #endif
-#ifndef TCP_SERVER_PORT
-#define TCP_SERVER_PORT         9000
+#ifndef IPERF_TCP_SERVER_PORT
+#define IPERF_TCP_SERVER_PORT   9010
 #endif
-#ifndef UDP_SERVER_HOST
-#define UDP_SERVER_HOST         "47.109.101.196"
+#ifndef IPERF_UDP_SERVER_HOST
+#define IPERF_UDP_SERVER_HOST   "47.109.101.196"
 #endif
-#ifndef UDP_SERVER_PORT
-#define UDP_SERVER_PORT         9003
-#endif
-#ifndef CLIENT_SEND_PERIOD
-#define CLIENT_SEND_PERIOD      5000    /* Send period in ticks (5s at 1000Hz) */
+#ifndef IPERF_UDP_SERVER_PORT
+#define IPERF_UDP_SERVER_PORT   9011
 #endif
 
-/** TCP/UDP client thread priorities — unique per thread */
-#define TCP_CLIENT_THREAD_PRIO  32
-#define TCP_CLIENT_THREAD_STACK 1024*3
-#define UDP_CLIENT_THREAD_PRIO  33
-#define UDP_CLIENT_THREAD_STACK 1024*3
+/** iperf TX test duration in ticks (10s at 1000Hz = 10000) */
+#define IPERF_TEST_DURATION     (10 * TX_TIMER_TICKS_PER_SECOND)
 
-/** TCP/UDP receive buffer size */
-#define CLIENT_RX_BUF_SIZE      256
+/** UDP iperf packet payload size (bytes) */
+#define IPERF_UDP_PACKET_SIZE   1470
+
+/** iperf thread priorities and stack sizes */
+#define TCP_IPERF_THREAD_PRIO   32
+#define TCP_IPERF_THREAD_STACK  (1024 * 3)
+#define UDP_IPERF_THREAD_PRIO   33
+#define UDP_IPERF_THREAD_STACK  (1024 * 3)
 
 /** IP instance internal memory size */
 #define IP_MEMORY_SIZE          2048
@@ -174,8 +174,11 @@ static VOID *udp_client_stack_ptr;
 
 /* PPP link state */
 static TX_EVENT_FLAGS_GROUP ppp_events;
-#define PPP_EVT_LINK_UP     0x01
-#define PPP_EVT_LINK_DOWN   0x02
+#define PPP_EVT_LINK_UP         0x01
+#define PPP_EVT_LINK_DOWN       0x02
+#define PPP_EVT_TCP_IPERF_DONE  0x04
+#define PPP_EVT_UDP_IPERF_DONE  0x08
+#define PPP_EVT_IPERF_ALL_DONE  (PPP_EVT_TCP_IPERF_DONE | PPP_EVT_UDP_IPERF_DONE)
 
 /* Thread handles */
 static TX_THREAD ppp_read_thread;
@@ -215,31 +218,6 @@ static bsp_serial_t *ppp_serial = NULL;
 volatile UINT netx_init_status = 0;
 volatile UINT netx_init_step = 0;
 
-/* ---- CDC-ECM network interface ---- */
-
-#define TAG_ECM     "ECM"
-
-/** ECM IP instance internal memory (does not need to come from pool) */
-#define ECM_IP_MEMORY_SIZE      2048
-#define ECM_ARP_CACHE_SIZE      1024
-#define ECM_PACKET_POOL_SIZE    (1536 * 8 + 128 * 8)  /* 8 × (1536 payload + ~128 NX_PACKET overhead) */
-#define ECM_PACKET_PAYLOAD      1536
-#define ECM_DHCP_THREAD_STACK   1024
-#define ECM_DHCP_THREAD_PRIO    30
-
-static NX_IP            ecm_ip;
-static NX_PACKET_POOL   ecm_pool;
-static NX_DHCP          ecm_dhcp;
-static TX_THREAD        ecm_dhcp_thread;
-static uint8_t          ecm_ip_created = 0;
-static uint8_t          ecm_ip_logged  = 0;
-
-/* Statically allocated memory for ECM — avoids pool fragmentation */
-static ULONG            ecm_ip_memory[ECM_IP_MEMORY_SIZE / sizeof(ULONG)];
-static ULONG            ecm_arp_cache[ECM_ARP_CACHE_SIZE / sizeof(ULONG)];
-static ULONG            ecm_dhcp_stack[ECM_DHCP_THREAD_STACK / sizeof(ULONG)];
-static ULONG            ecm_pool_memory[ECM_PACKET_POOL_SIZE / sizeof(ULONG)];
-
 /* Active IP/pool accessors — return the PPP IP instance and its packet pool.
  * Used by NTP, TCP, UDP threads to get the active network context. */
 NX_IP *app_netxduo_get_active_ip(void)   { return &ip_0; }
@@ -252,8 +230,8 @@ NX_PACKET_POOL *app_netxduo_get_active_pool(void) { return &pool_0; }
 
 static void ppp_read_thread_entry(ULONG param);
 static void ntp_thread_entry(ULONG param);
-static void tcp_client_thread_entry(ULONG param);
-static void udp_client_thread_entry(ULONG param);
+static void tcp_iperf_thread_entry(ULONG param);
+static void udp_iperf_thread_entry(ULONG param);
 static UINT resolve_host(const char *host, ULONG *ip_address);
 static void ppp_link_up_callback(NX_PPP *ppp_ptr);
 static void ppp_link_down_callback(NX_PPP *ppp_ptr);
@@ -323,7 +301,7 @@ static void ppp_byte_send(UCHAR byte)
             /* End of frame — flush everything in one write */
             if (ppp_tx_pos < sizeof(ppp_tx_buf))
                 ppp_tx_buf[ppp_tx_pos++] = 0x7E;
-            ppp_serial->write(ppp_tx_buf, ppp_tx_pos);
+            ppp_serial->write(ppp_serial, ppp_tx_buf, ppp_tx_pos);
 
         #ifdef NX_PPP_DEBUG_LOG_ENABLE
             elog_hexdump("PPP TX", 16, ppp_tx_buf, ppp_tx_pos);
@@ -504,7 +482,7 @@ static void ppp_read_thread_entry(ULONG param)
     while (1)
     {
         /* Block until at least one byte is available, then read up to PPP_RX_BATCH_SIZE */
-        uint16_t n = ppp_serial->read(ppp_rx_buf, PPP_RX_BATCH_SIZE, TX_WAIT_FOREVER);
+        uint16_t n = ppp_serial->read(ppp_serial, ppp_rx_buf, PPP_RX_BATCH_SIZE, TX_WAIT_FOREVER);
 
         /* Feed bytes to NetX PPP parser. The PPP Thread's do-while loop
          * (in nx_ppp.c) processes ALL pending packets per event, so feeding
@@ -537,15 +515,21 @@ static void ntp_thread_entry(ULONG param)
         tx_event_flags_get(&ppp_events, PPP_EVT_LINK_UP, TX_OR_CLEAR,
                            &actual_flags, TX_WAIT_FOREVER);
 
-        elog_d(TAG_NTP, "PPP link is up, starting time sync...");
+        elog_d(TAG_NTP, "PPP link is up, waiting for iperf tests to finish...");
 
-        /* Wait for PPP routing and carrier DNS to settle */
-        tx_thread_sleep(5000);
+        /* Wait for both TCP and UDP iperf tests to complete before using the link */
+        tx_event_flags_get(&ppp_events, PPP_EVT_IPERF_ALL_DONE, TX_OR_CLEAR,
+                           &actual_flags, TX_WAIT_FOREVER);
+
+        elog_d(TAG_NTP, "iperf tests done, starting time sync...");
+
+        /* Let routing/DNS settle after iperf */
+        tx_thread_sleep(2000);
 
         /* ---- Step 3: Resolve NTP server hostname (with retries) ---- */
         {
             UINT dns_retry;
-            for (dns_retry = 0; dns_retry < 10; dns_retry++)
+            for (dns_retry = 0; dns_retry < 3; dns_retry++)
             {
                 elog_d(TAG_DNS, "Resolving %s (attempt %u) ...", NTP_SERVER_HOST, dns_retry + 1);
                 status = resolve_host(NTP_SERVER_HOST, &ntp_ip_address);
@@ -709,8 +693,6 @@ UINT MX_NetXDuo_Init(VOID *memory_ptr)
     /* USER CODE BEGIN MX_NetXDuo_MEM_POOL */
     /* USER CODE END MX_NetXDuo_MEM_POOL */
 
-    /* ---- Allocate all memory from NX byte pool ---- */
-
     /* Packet pool memory: PACKET_POOL_SIZE bytes */
     netx_init_step = 1;
     status = tx_byte_allocate(byte_pool, &pool_memory_ptr,
@@ -741,16 +723,16 @@ UINT MX_NetXDuo_Init(VOID *memory_ptr)
                                NTP_THREAD_STACK, TX_NO_WAIT);
     if (status != TX_SUCCESS) { netx_init_status = status; return status; }
 
-    /* TCP client thread stack */
+    /* TCP iperf thread stack */
     netx_init_step = 51;
     status = tx_byte_allocate(byte_pool, &tcp_client_stack_ptr,
-                               TCP_CLIENT_THREAD_STACK, TX_NO_WAIT);
+                               TCP_IPERF_THREAD_STACK, TX_NO_WAIT);
     if (status != TX_SUCCESS) { netx_init_status = status; return status; }
 
-    /* UDP client thread stack */
+    /* UDP iperf thread stack */
     netx_init_step = 52;
     status = tx_byte_allocate(byte_pool, &udp_client_stack_ptr,
-                               UDP_CLIENT_THREAD_STACK, TX_NO_WAIT);
+                               UDP_IPERF_THREAD_STACK, TX_NO_WAIT);
     if (status != TX_SUCCESS) { netx_init_status = status; return status; }
 
     /* ARP cache memory */
@@ -790,21 +772,21 @@ UINT MX_NetXDuo_Init(VOID *memory_ptr)
                                TX_NO_TIME_SLICE, TX_AUTO_START);
     if (status != TX_SUCCESS) { netx_init_status = status; return status; }
 
-    /* ---- Create TCP client thread ---- */
+    /* ---- Create TCP iperf TX thread ---- */
     netx_init_step = 11;
-    status = tx_thread_create(&tcp_client_thread, "TCP Client",
-                               tcp_client_thread_entry, 0,
-                               tcp_client_stack_ptr, TCP_CLIENT_THREAD_STACK,
-                               TCP_CLIENT_THREAD_PRIO, TCP_CLIENT_THREAD_PRIO,
+    status = tx_thread_create(&tcp_client_thread, "TCP iperf TX",
+                               tcp_iperf_thread_entry, 0,
+                               tcp_client_stack_ptr, TCP_IPERF_THREAD_STACK,
+                               TCP_IPERF_THREAD_PRIO, TCP_IPERF_THREAD_PRIO,
                                TX_NO_TIME_SLICE, TX_AUTO_START);
     if (status != TX_SUCCESS) { netx_init_status = status; return status; }
 
-    /* ---- Create UDP client thread ---- */
+    /* ---- Create UDP iperf TX thread ---- */
     netx_init_step = 12;
-    status = tx_thread_create(&udp_client_thread, "UDP Client",
-                               udp_client_thread_entry, 0,
-                               udp_client_stack_ptr, UDP_CLIENT_THREAD_STACK,
-                               UDP_CLIENT_THREAD_PRIO, UDP_CLIENT_THREAD_PRIO,
+    status = tx_thread_create(&udp_client_thread, "UDP iperf TX",
+                               udp_iperf_thread_entry, 0,
+                               udp_client_stack_ptr, UDP_IPERF_THREAD_STACK,
+                               UDP_IPERF_THREAD_PRIO, UDP_IPERF_THREAD_PRIO,
                                TX_NO_TIME_SLICE, TX_AUTO_START);
     if (status != TX_SUCCESS) { netx_init_status = status; return status; }
 
@@ -1112,14 +1094,14 @@ static UINT dns_client_setup(void)
     if (dns1_rc == NX_SUCCESS) nx_dns_server_add(&dns_client, dns1);
     if (dns2_rc == NX_SUCCESS) nx_dns_server_add(&dns_client, dns2);
 
-    /* Fallback DNS if carrier didn't provide any */
+    /* Always add fallback DNS — carrier DNS may be unreachable or slow */
+    nx_dns_server_add(&dns_client, IP_ADDRESS(8, 8, 8, 8));
+    nx_dns_server_add(&dns_client, IP_ADDRESS(114, 114, 114, 114));
+
     if (dns1_rc != NX_SUCCESS && dns2_rc != NX_SUCCESS) {
-        nx_dns_server_add(&dns_client, IP_ADDRESS(8, 8, 8, 8));
-        nx_dns_server_add(&dns_client, IP_ADDRESS(114, 114, 114, 114));
-        elog_w(TAG_DNS, "No carrier DNS (rc=%u/%u), using fallback 8.8.8.8 / 114.114.114.114",
-               dns1_rc, dns2_rc);
+        elog_w(TAG_DNS, "No carrier DNS (rc=%u/%u), using fallback only", dns1_rc, dns2_rc);
     } else {
-        elog_i(TAG_DNS, "DNS servers: %lu.%lu.%lu.%lu, %lu.%lu.%lu.%lu",
+        elog_i(TAG_DNS, "DNS servers: %lu.%lu.%lu.%lu, %lu.%lu.%lu.%lu + fallback 8.8.8.8, 114.114.114.114",
               (dns1 >> 24) & 0xFF, (dns1 >> 16) & 0xFF,
               (dns1 >> 8)  & 0xFF,  dns1 & 0xFF,
               (dns2 >> 24) & 0xFF, (dns2 >> 16) & 0xFF,
@@ -1229,548 +1211,408 @@ static UINT resolve_host(const char *host, ULONG *ip_address)
 }
 
 /**
-  * @brief  TCP client thread — connects to server, periodically sends data and prints replies
-  * @note   Restarts on PPP link-down/up cycle (re-resolves, re-creates socket)
+  * @brief  TCP iperf TX test thread — sends max data for 10 seconds after PPP link-up
+  * @note   Reference: nx_iperf_thread_tcp_tx_entry() in nx_iperf.c
+  *         Uses TCP MSS as packet size. Runs once per PPP link-up cycle.
   */
-static void tcp_client_thread_entry(ULONG param)
+static void tcp_iperf_thread_entry(ULONG param)
 {
     (void)param;
     ULONG actual_flags;
-    uint8_t rx_buf[CLIENT_RX_BUF_SIZE];
+    UINT  status;
+    NX_TCP_SOCKET socket;
+    NX_PACKET *packet_ptr;
+    ULONG server_ip;
+    ULONG packet_size;
+    ULONG packets_txed;
+    ULONG bytes_txed;
+    ULONG start_time, run_time;
+    ULONG expire_time;
+    UINT  is_first;
+    ULONG error_counter;
 
     while (1)
     {
         /* Wait for PPP link-up */
-        elog_d(TAG_TCP, "Waiting for PPP link-up...");
+        elog_d(TAG_TCP, "[iperf] Waiting for PPP link-up...");
         tx_event_flags_get(&ppp_events, PPP_EVT_LINK_UP, TX_OR_CLEAR,
                            &actual_flags, TX_WAIT_FOREVER);
-        tx_thread_sleep(1000);  /* Let routing settle */
+        tx_thread_sleep(2000);  /* Let routing settle */
 
-        NX_TCP_SOCKET socket;
-        NX_PACKET *packet_ptr;
-        UINT status;
-        ULONG server_ip;
-
-        /* Resolve server address (retry up to 5 times with backoff) */
+        /* Resolve server address (retry up to 5 times) */
         {
             UINT dns_retries;
             for (dns_retries = 0; dns_retries < 5; dns_retries++) {
-                status = resolve_host(TCP_SERVER_HOST, &server_ip);
+                status = resolve_host(IPERF_TCP_SERVER_HOST, &server_ip);
                 if (status == NX_SUCCESS) break;
-                elog_w(TAG_TCP, "Resolve attempt %u failed: 0x%02X", dns_retries + 1, status);
-                tx_thread_sleep(2000 * (dns_retries + 1));
+                elog_w(TAG_TCP, "[iperf] Resolve attempt %u failed: 0x%02X", dns_retries + 1, status);
+                tx_thread_sleep(3000);
             }
         }
         if (status != NX_SUCCESS)
         {
-            elog_e(TAG_TCP, "Resolve '%s' failed after 5 attempts: 0x%02X", TCP_SERVER_HOST, status);
-            goto tcp_wait_link_down;
+            elog_e(TAG_TCP, "[iperf] Resolve '%s' failed: 0x%02X", IPERF_TCP_SERVER_HOST, status);
+            goto tcp_iperf_wait_down;
         }
 
-        elog_d(TAG_TCP, "Server: %s = %lu.%lu.%lu.%lu:%d", TCP_SERVER_HOST,
+        elog_i(TAG_TCP, "[iperf] TCP TX server: %s = %lu.%lu.%lu.%lu:%d",
+              IPERF_TCP_SERVER_HOST,
               (server_ip >> 24) & 0xFF, (server_ip >> 16) & 0xFF,
-              (server_ip >> 8) & 0xFF, server_ip & 0xFF, TCP_SERVER_PORT);
+              (server_ip >> 8) & 0xFF, server_ip & 0xFF, IPERF_TCP_SERVER_PORT);
 
-        while (1)
+        /* Create TCP socket */
         {
-            /* Check for PPP link-down (non-blocking) */
-            status = tx_event_flags_get(&ppp_events, PPP_EVT_LINK_DOWN, TX_OR_CLEAR,
-                                        &actual_flags, NX_NO_WAIT);
-            if (status == TX_SUCCESS)
-            {
-                elog_w(TAG_TCP, "PPP link-down, cleaning up TCP");
-                goto tcp_cleanup_socket;
-            }
-
-            /* Create TCP socket */
-            {
-                NX_IP *tcp_ip = app_netxduo_get_active_ip();
-                NX_PACKET_POOL *tcp_pool = app_netxduo_get_active_pool();
-                if (tcp_ip == NULL || tcp_pool == NULL) { tx_thread_sleep(CLIENT_SEND_PERIOD); continue; }
-                status = nx_tcp_socket_create(tcp_ip, &socket, "TCP Client",
-                                              NX_IP_NORMAL, NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE, 2048,
-                                              NX_NULL, NX_NULL);
-                if (status != NX_SUCCESS)
-                {
-                    elog_e(TAG_TCP, "Socket create failed: 0x%02X", status);
-                    tx_thread_sleep(CLIENT_SEND_PERIOD);
-                    continue;
-                }
-            }
-
-            status = nx_tcp_client_socket_bind(&socket, NX_ANY_PORT, NX_IP_PERIODIC_RATE);
+            NX_IP *tcp_ip = app_netxduo_get_active_ip();
+            if (tcp_ip == NULL) goto tcp_iperf_wait_down;
+            status = nx_tcp_socket_create(tcp_ip, &socket, "TCP iperf TX",
+                                          NX_IP_NORMAL, NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE, 16 * 1024,
+                                          NX_NULL, NX_NULL);
             if (status != NX_SUCCESS)
             {
-                elog_e(TAG_TCP, "Bind failed: 0x%02X", status);
-                nx_tcp_socket_delete(&socket);
-                tx_thread_sleep(CLIENT_SEND_PERIOD);
-                continue;
+                elog_e(TAG_TCP, "[iperf] Socket create failed: 0x%02X", status);
+                goto tcp_iperf_wait_down;
             }
-
-            status = nx_tcp_client_socket_connect(&socket, server_ip, TCP_SERVER_PORT,
-                                                  5 * NX_IP_PERIODIC_RATE);
-            if (status != NX_SUCCESS)
-            {
-                elog_e(TAG_TCP, "Connect failed: 0x%02X", status);
-                nx_tcp_client_socket_unbind(&socket);
-                nx_tcp_socket_delete(&socket);
-                tx_thread_sleep(CLIENT_SEND_PERIOD);
-                continue;
-            }
-
-            elog_d(TAG_TCP, "Connected!");
-
-            while (1)
-            {
-                /* Check for PPP link-down (non-blocking) */
-                status = tx_event_flags_get(&ppp_events, PPP_EVT_LINK_DOWN, TX_OR_CLEAR,
-                                            &actual_flags, NX_NO_WAIT);
-                if (status == TX_SUCCESS)
-                {
-                    elog_w(TAG_TCP, "PPP link-down during session");
-                    goto tcp_cleanup_socket;
-                }
-
-                /* Send data */
-                NX_IP *tcp_ip = app_netxduo_get_active_ip();
-                NX_PACKET_POOL *tcp_pool = app_netxduo_get_active_pool();
-                if (tcp_ip == NULL || tcp_pool == NULL) break;
-
-                const char *msg = "Hello from STM32 TCP\r\n";
-                status = nx_packet_allocate(tcp_pool, &packet_ptr, NX_TCP_PACKET, NX_WAIT_FOREVER);
-                if (status != NX_SUCCESS)
-                {
-                    elog_e(TAG_TCP, "Packet alloc failed: 0x%02X", status);
-                    break;
-                }
-                status = nx_packet_data_append(packet_ptr, (void *)msg, strlen(msg),
-                                               tcp_pool, NX_WAIT_FOREVER);
-                if (status != NX_SUCCESS)
-                {
-                    elog_e(TAG_TCP, "Packet append failed: 0x%02X", status);
-                    nx_packet_release(packet_ptr);
-                    break;
-                }
-                status = nx_tcp_socket_send(&socket, packet_ptr, NX_IP_PERIODIC_RATE);
-                if (status != NX_SUCCESS)
-                {
-                    elog_e(TAG_TCP, "Send failed: 0x%02X", status);
-                    nx_packet_release(packet_ptr);
-                    break;
-                }
-                elog_d(TAG_TCP, "TX: %s", msg);
-
-                /* Receive response */
-                status = nx_tcp_socket_receive(&socket, &packet_ptr, 2 * NX_IP_PERIODIC_RATE);
-                if (status == NX_SUCCESS)
-                {
-                    ULONG len = packet_ptr->nx_packet_length;
-                    if (len > CLIENT_RX_BUF_SIZE - 1) len = CLIENT_RX_BUF_SIZE - 1;
-                    memcpy(rx_buf, packet_ptr->nx_packet_prepend_ptr, len);
-                    rx_buf[len] = '\0';
-                    elog_d(TAG_TCP, "RX [%lu]: %s", len, rx_buf);
-                    nx_packet_release(packet_ptr);
-                }
-                else if (status == NX_NO_PACKET)
-                {
-                    /* Timeout — no data received, just continue */
-                }
-                else
-                {
-                    elog_w(TAG_TCP, "Receive error: 0x%02X", status);
-                    break;
-                }
-
-                tx_thread_sleep(CLIENT_SEND_PERIOD);
-            }
-
-tcp_cleanup_socket:
-            /* Disconnect and cleanup — skip if PPP is being destroyed
-             * (IP instance may already be deleted by destroy_ppp) */
-            if (!ppp_destroying) {
-                nx_tcp_socket_disconnect(&socket, NX_IP_PERIODIC_RATE);
-                nx_tcp_client_socket_unbind(&socket);
-                nx_tcp_socket_delete(&socket);
-            } else {
-                elog_w(TAG_TCP, "PPP destroying — skipping socket cleanup");
-            }
-
-            /* If link-down triggered cleanup, wait for next link-up cycle */
-            if (actual_flags & PPP_EVT_LINK_DOWN) goto tcp_wait_link_down;
-
-            elog_w(TAG_TCP, "Disconnected, reconnecting...");
-            tx_thread_sleep(1000);
         }
 
-tcp_wait_link_down:
-        /* Wait for link-down event if not already received */
+        /* Bind to any port */
+        status = nx_tcp_client_socket_bind(&socket, NX_ANY_PORT, NX_WAIT_FOREVER);
+        if (status != NX_SUCCESS)
+        {
+            elog_e(TAG_TCP, "[iperf] Bind failed: 0x%02X", status);
+            nx_tcp_socket_delete(&socket);
+            goto tcp_iperf_wait_down;
+        }
+
+        /* Connect to iperf server */
+        elog_i(TAG_TCP, "[iperf] Connecting to %lu.%lu.%lu.%lu:%d ...",
+              (server_ip >> 24) & 0xFF, (server_ip >> 16) & 0xFF,
+              (server_ip >> 8) & 0xFF, server_ip & 0xFF, IPERF_TCP_SERVER_PORT);
+
+        {
+            NXD_ADDRESS nxd_server_ip;
+            nxd_server_ip.nxd_ip_version = NX_IP_VERSION_V4;
+            nxd_server_ip.nxd_ip_address.v4 = server_ip;
+            status = nxd_tcp_client_socket_connect(&socket, &nxd_server_ip,
+                                                   IPERF_TCP_SERVER_PORT,
+                                                   10 * NX_IP_PERIODIC_RATE);
+        }
+        if (status != NX_SUCCESS)
+        {
+            elog_e(TAG_TCP, "[iperf] Connect failed: 0x%02X", status);
+            nx_tcp_client_socket_unbind(&socket);
+            nx_tcp_socket_delete(&socket);
+            goto tcp_iperf_wait_down;
+        }
+
+        elog_i(TAG_TCP, "[iperf] Connected! Starting %d second TCP TX test...", IPERF_TEST_DURATION / TX_TIMER_TICKS_PER_SECOND);
+
+        /* Get TCP MSS as packet size (same as nx_iperf) */
+        status = nx_tcp_socket_mss_get(&socket, &packet_size);
+        if (status != NX_SUCCESS)
+        {
+            elog_e(TAG_TCP, "[iperf] MSS get failed: 0x%02X", status);
+            nx_tcp_socket_disconnect(&socket, NX_NO_WAIT);
+            nx_tcp_client_socket_unbind(&socket);
+            nx_tcp_socket_delete(&socket);
+            goto tcp_iperf_wait_down;
+        }
+
+        /* Initialize counters */
+        packets_txed = 0;
+        bytes_txed   = 0;
+        error_counter = 0;
+        is_first = NX_TRUE;
+
+        /* Timed transmit loop — 10 seconds */
+        start_time = tx_time_get();
+        expire_time = start_time + IPERF_TEST_DURATION;
+
+        while (tx_time_get() < expire_time)
+        {
+            NX_PACKET_POOL *pool = app_netxduo_get_active_pool();
+            if (pool == NULL) break;
+
+            /* Allocate packet — blocks until available (same as nx_iperf) */
+            status = nx_packet_allocate(pool, &packet_ptr, NX_IPv4_TCP_PACKET, NX_WAIT_FOREVER);
+            if (status != NX_SUCCESS)
+            {
+                elog_e(TAG_TCP, "[iperf] packet_allocate failed: 0x%02X after %lu pkts, pool_avail=%lu",
+                       status, packets_txed, pool->nx_packet_pool_available);
+                break;
+            }
+
+            /* Set packet data size */
+            if (packet_ptr->nx_packet_prepend_ptr + packet_size <= packet_ptr->nx_packet_data_end)
+            {
+                packet_ptr->nx_packet_append_ptr = packet_ptr->nx_packet_prepend_ptr + packet_size;
+            }
+            else
+            {
+                packet_size = (ULONG)(packet_ptr->nx_packet_data_end - packet_ptr->nx_packet_prepend_ptr);
+                packet_ptr->nx_packet_append_ptr = packet_ptr->nx_packet_prepend_ptr + packet_size;
+            }
+            packet_ptr->nx_packet_length = packet_size;
+
+            /* Zero first packet payload (like nx_iperf) */
+            if (is_first)
+            {
+                memset(packet_ptr->nx_packet_prepend_ptr, 0,
+                       (UINT)(packet_ptr->nx_packet_data_end - packet_ptr->nx_packet_prepend_ptr));
+                is_first = NX_FALSE;
+            }
+
+            /* Send — blocks until TCP window has space (same as nx_iperf) */
+            status = nx_tcp_socket_send(&socket, packet_ptr, NX_WAIT_FOREVER);
+            if (status)
+            {
+                elog_e(TAG_TCP, "[iperf] tcp_send failed: 0x%02X (%lu pkts, %lu bytes, pool=%lu)",
+                       status, packets_txed, bytes_txed, pool->nx_packet_pool_available);
+                error_counter++;
+                nx_packet_release(packet_ptr);
+                break;
+            }
+
+            packets_txed++;
+            bytes_txed += packet_size;
+        }
+
+        /* Calculate results */
+        run_time = tx_time_get() - start_time;
+        if (run_time == 0) run_time = 1;
+
+        {
+            /* Throughput in Mbps (x10 for one decimal):
+             * Mbps = bytes * 8 / time_s / 1000000
+             *      = bytes / time_s / 125000
+             *      = bytes / run_time_ticks * ticks_per_sec / 125000
+             * Compute in Kbps first to avoid truncation, then /100 for Mbps*10 */
+            ULONG bytes_per_sec = bytes_txed / run_time * NX_IP_PERIODIC_RATE
+                                + (bytes_txed % run_time) * NX_IP_PERIODIC_RATE / run_time;
+            ULONG throughput_kbps = bytes_per_sec * 8 / 1000;
+            ULONG throughput_mbps_x10 = throughput_kbps / 100;
+
+            elog_i(TAG_TCP, "========================================");
+            elog_i(TAG_TCP, "[iperf] TCP TX Test Results:");
+            elog_i(TAG_TCP, "  Server     : %s:%d", IPERF_TCP_SERVER_HOST, IPERF_TCP_SERVER_PORT);
+            elog_i(TAG_TCP, "  Duration   : %lu.%lus", run_time / NX_IP_PERIODIC_RATE,
+                   (run_time % NX_IP_PERIODIC_RATE) * 10 / NX_IP_PERIODIC_RATE);
+            elog_i(TAG_TCP, "  Packet Size: %lu bytes (TCP MSS)", packet_size);
+            elog_i(TAG_TCP, "  Packets TX : %lu", packets_txed);
+            elog_i(TAG_TCP, "  Bytes TX   : %lu bytes (%lu KB)", bytes_txed, bytes_txed / 1024);
+            elog_i(TAG_TCP, "  Throughput  : %lu.%lu Mbps", throughput_mbps_x10 / 10, throughput_mbps_x10 % 10);
+            elog_i(TAG_TCP, "  Errors     : %lu", error_counter);
+            elog_i(TAG_TCP, "========================================");
+        }
+
+        /* Disconnect and cleanup */
+        if (!ppp_destroying) {
+            nx_tcp_socket_disconnect(&socket, NX_NO_WAIT);
+            nx_tcp_client_socket_unbind(&socket);
+            nx_tcp_socket_delete(&socket);
+        }
+
+tcp_iperf_wait_down:
+        /* Signal TCP iperf done — NTP thread waits for this */
+        tx_event_flags_set(&ppp_events, PPP_EVT_TCP_IPERF_DONE, TX_OR);
+
+        /* Wait for link-down before next cycle */
         tx_event_flags_get(&ppp_events, PPP_EVT_LINK_DOWN, TX_OR_CLEAR,
                            &actual_flags, TX_WAIT_FOREVER);
     }
 }
 
 /**
-  * @brief  UDP client thread — periodically sends data to server and prints replies
-  * @note   Restarts on PPP link-down/up cycle (re-resolves, re-creates socket)
+  * @brief  UDP iperf TX test thread — sends max data for 20 seconds after PPP link-up
+  * @note   Reference: nx_iperf_thread_udp_tx_entry() in nx_iperf.c
+  *         Uses configurable UDP packet size with iperf-compatible payload format.
+  *         Runs once per PPP link-up cycle.
   */
-static void udp_client_thread_entry(ULONG param)
+static void udp_iperf_send_packet(NX_UDP_SOCKET *sock, int udp_id,
+                                   ULONG server_ip, ULONG port, ULONG pkt_size)
+{
+    NX_PACKET *packet_ptr;
+    NX_PACKET_POOL *pool = app_netxduo_get_active_pool();
+    if (pool == NULL) return;
+
+    UINT status = nx_packet_allocate(pool, &packet_ptr, NX_IPv4_UDP_PACKET, TX_WAIT_FOREVER);
+    if (status != NX_SUCCESS) return;
+
+    /* Set packet length */
+    if (pkt_size > (ULONG)(packet_ptr->nx_packet_data_end - packet_ptr->nx_packet_prepend_ptr))
+        pkt_size = (ULONG)(packet_ptr->nx_packet_data_end - packet_ptr->nx_packet_prepend_ptr);
+
+    packet_ptr->nx_packet_append_ptr = packet_ptr->nx_packet_prepend_ptr + pkt_size;
+    packet_ptr->nx_packet_length = (UINT)pkt_size;
+
+    /* Fill with iperf-compatible UDP payload: id(4) + tv_sec(4) + tv_usec(4) */
+    if (pkt_size >= 12)
+    {
+        ULONG *payload = (ULONG *)packet_ptr->nx_packet_prepend_ptr;
+        ULONG ticks = tx_time_get();
+        payload[0] = (ULONG)udp_id;
+        payload[1] = ticks / NX_IP_PERIODIC_RATE;          /* seconds */
+        payload[2] = (ticks % NX_IP_PERIODIC_RATE) * 1000000 / NX_IP_PERIODIC_RATE; /* usec */
+        NX_CHANGE_ULONG_ENDIAN(payload[0]);
+        NX_CHANGE_ULONG_ENDIAN(payload[1]);
+        NX_CHANGE_ULONG_ENDIAN(payload[2]);
+    }
+
+    /* Send */
+    status = nx_udp_socket_send(sock, packet_ptr, server_ip, (UINT)port);
+    if (status)
+    {
+        nx_packet_release(packet_ptr);
+    }
+}
+
+/**
+  * @brief  UDP iperf TX thread entry
+  */
+static void udp_iperf_thread_entry(ULONG param)
 {
     (void)param;
     ULONG actual_flags;
-    uint8_t rx_buf[CLIENT_RX_BUF_SIZE];
+    UINT  status;
+    NX_UDP_SOCKET socket;
+    ULONG server_ip;
+    ULONG packets_txed;
+    ULONG bytes_txed;
+    ULONG start_time, run_time;
+    ULONG expire_time;
+    ULONG error_counter;
+    int   udp_id;
 
     while (1)
     {
-        /* Wait for PPP link-up */
-        elog_d(TAG_UDP, "Waiting for PPP link-up...");
-        tx_event_flags_get(&ppp_events, PPP_EVT_LINK_UP, TX_OR_CLEAR,
+        /* Wait for TCP iperf to finish (which implies PPP link-up happened).
+         * Do NOT also wait on PPP_EVT_LINK_UP — TCP thread clears that flag
+         * with TX_OR_CLEAR, so UDP would miss it on the first cycle. */
+        elog_d(TAG_UDP, "[iperf] Waiting for TCP iperf to finish...");
+        tx_event_flags_get(&ppp_events, PPP_EVT_TCP_IPERF_DONE, TX_OR_CLEAR,
                            &actual_flags, TX_WAIT_FOREVER);
-        tx_thread_sleep(1500);  /* Let routing settle, stagger after TCP */
 
-        NX_UDP_SOCKET socket;
-        NX_PACKET *packet_ptr;
-        UINT status;
-        ULONG server_ip;
-
-        /* Resolve server address (retry up to 5 times with backoff) */
+        /* Resolve server address (retry up to 5 times) */
         {
             UINT dns_retries;
             for (dns_retries = 0; dns_retries < 5; dns_retries++) {
-                status = resolve_host(UDP_SERVER_HOST, &server_ip);
+                status = resolve_host(IPERF_UDP_SERVER_HOST, &server_ip);
                 if (status == NX_SUCCESS) break;
-                elog_w(TAG_UDP, "Resolve attempt %u failed: 0x%02X", dns_retries + 1, status);
-                tx_thread_sleep(2000 * (dns_retries + 1));
+                elog_w(TAG_UDP, "[iperf] Resolve attempt %u failed: 0x%02X", dns_retries + 1, status);
+                tx_thread_sleep(3000);
             }
         }
         if (status != NX_SUCCESS)
         {
-            elog_e(TAG_UDP, "Resolve '%s' failed after 5 attempts: 0x%02X", UDP_SERVER_HOST, status);
-            goto udp_wait_link_down;
+            elog_e(TAG_UDP, "[iperf] Resolve '%s' failed: 0x%02X", IPERF_UDP_SERVER_HOST, status);
+            goto udp_iperf_wait_down;
         }
 
-        elog_d(TAG_UDP, "Server: %s = %lu.%lu.%lu.%lu:%d", UDP_SERVER_HOST,
+        elog_i(TAG_UDP, "[iperf] UDP TX server: %s = %lu.%lu.%lu.%lu:%d",
+              IPERF_UDP_SERVER_HOST,
               (server_ip >> 24) & 0xFF, (server_ip >> 16) & 0xFF,
-              (server_ip >> 8) & 0xFF, server_ip & 0xFF, UDP_SERVER_PORT);
+              (server_ip >> 8) & 0xFF, server_ip & 0xFF, IPERF_UDP_SERVER_PORT);
 
         /* Create UDP socket */
         {
             NX_IP *udp_ip = app_netxduo_get_active_ip();
-            NX_PACKET_POOL *udp_pool = app_netxduo_get_active_pool();
-            if (udp_ip == NULL || udp_pool == NULL) { goto udp_wait_link_down; }
-            status = nx_udp_socket_create(udp_ip, &socket, "UDP Client",
+            if (udp_ip == NULL) goto udp_iperf_wait_down;
+            status = nx_udp_socket_create(udp_ip, &socket, "UDP iperf TX",
                                           NX_IP_NORMAL, NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE, 512);
             if (status != NX_SUCCESS)
             {
-                elog_e(TAG_UDP, "Socket create failed: 0x%02X", status);
-                goto udp_wait_link_down;
+                elog_e(TAG_UDP, "[iperf] Socket create failed: 0x%02X", status);
+                goto udp_iperf_wait_down;
             }
         }
 
-        status = nx_udp_socket_bind(&socket, NX_ANY_PORT, NX_IP_PERIODIC_RATE);
+        status = nx_udp_socket_bind(&socket, NX_ANY_PORT, TX_WAIT_FOREVER);
         if (status != NX_SUCCESS)
         {
-            elog_e(TAG_UDP, "Bind failed: 0x%02X", status);
+            elog_e(TAG_UDP, "[iperf] Bind failed: 0x%02X", status);
             nx_udp_socket_delete(&socket);
-            goto udp_wait_link_down;
+            goto udp_iperf_wait_down;
         }
 
-        while (1)
+        /* Disable UDP checksum for performance (same as nx_iperf) */
+        nx_udp_socket_checksum_disable(&socket);
+
+        elog_i(TAG_UDP, "[iperf] Starting 20s UDP TX test (pkt_size=%d)...", IPERF_UDP_PACKET_SIZE);
+
+        /* Initialize counters */
+        packets_txed  = 0;
+        bytes_txed    = 0;
+        error_counter = 0;
+        udp_id        = 0;
+
+        /* Timed transmit loop — 20 seconds */
+        start_time = tx_time_get();
+        expire_time = start_time + IPERF_TEST_DURATION;
+
+        while (tx_time_get() < expire_time)
         {
-            /* Check for PPP link-down (non-blocking) */
-            status = tx_event_flags_get(&ppp_events, PPP_EVT_LINK_DOWN, TX_OR_CLEAR,
-                                        &actual_flags, NX_NO_WAIT);
-            if (status == TX_SUCCESS)
-            {
-                elog_w(TAG_UDP, "PPP link-down, cleaning up UDP");
-                break;
-            }
+            /* Send one UDP iperf packet */
+            udp_iperf_send_packet(&socket, udp_id, server_ip, IPERF_UDP_SERVER_PORT,
+                                  IPERF_UDP_PACKET_SIZE);
 
-            /* Send data */
-            NX_IP *udp_ip = app_netxduo_get_active_ip();
-            NX_PACKET_POOL *udp_pool = app_netxduo_get_active_pool();
-            if (udp_ip == NULL || udp_pool == NULL) break;
-
-            const char *msg = "Hello from STM32 UDP\r\n";
-            status = nx_packet_allocate(udp_pool, &packet_ptr, NX_UDP_PACKET, NX_WAIT_FOREVER);
-            if (status != NX_SUCCESS)
-            {
-                elog_e(TAG_UDP, "Packet alloc failed: 0x%02X", status);
-                tx_thread_sleep(CLIENT_SEND_PERIOD);
-                continue;
-            }
-            status = nx_packet_data_append(packet_ptr, (void *)msg, strlen(msg),
-                                           udp_pool, NX_WAIT_FOREVER);
-            if (status != NX_SUCCESS)
-            {
-                elog_e(TAG_UDP, "Packet append failed: 0x%02X", status);
-                nx_packet_release(packet_ptr);
-                tx_thread_sleep(CLIENT_SEND_PERIOD);
-                continue;
-            }
-            status = nx_udp_socket_send(&socket, packet_ptr, server_ip, UDP_SERVER_PORT);
-            if (status != NX_SUCCESS)
-            {
-                elog_e(TAG_UDP, "Send failed: 0x%02X", status);
-                nx_packet_release(packet_ptr);
-            }
-            else
-            {
-                elog_d(TAG_UDP, "TX: %s", msg);
-            }
-
-            /* Receive response */
-            status = nx_udp_socket_receive(&socket, &packet_ptr, 2 * NX_IP_PERIODIC_RATE);
-            if (status == NX_SUCCESS)
-            {
-                ULONG len = packet_ptr->nx_packet_length;
-                if (len > CLIENT_RX_BUF_SIZE - 1) len = CLIENT_RX_BUF_SIZE - 1;
-                memcpy(rx_buf, packet_ptr->nx_packet_prepend_ptr, len);
-                rx_buf[len] = '\0';
-                elog_d(TAG_UDP, "RX [%lu]: %s", len, rx_buf);
-                nx_packet_release(packet_ptr);
-            }
-            else if (status == NX_NO_PACKET)
-            {
-                /* Timeout — no response */
-            }
-            else
-            {
-                elog_w(TAG_UDP, "Receive error: 0x%02X", status);
-            }
-
-            tx_thread_sleep(CLIENT_SEND_PERIOD);
+            udp_id = (udp_id + 1) & 0x7FFFFFFF;
+            packets_txed++;
+            bytes_txed += IPERF_UDP_PACKET_SIZE;
         }
 
-        /* Cleanup socket before next cycle — skip if PPP is being destroyed */
+        /* Calculate results */
+        run_time = tx_time_get() - start_time;
+        if (run_time == 0) run_time = 1;
+
+        {
+            ULONG bytes_per_sec = bytes_txed / run_time * NX_IP_PERIODIC_RATE
+                                + (bytes_txed % run_time) * NX_IP_PERIODIC_RATE / run_time;
+            ULONG throughput_kbps = bytes_per_sec * 8 / 1000;
+            ULONG throughput_mbps_x10 = throughput_kbps / 100;
+
+            elog_i(TAG_UDP, "========================================");
+            elog_i(TAG_UDP, "[iperf] UDP TX Test Results:");
+            elog_i(TAG_UDP, "  Server     : %s:%d", IPERF_UDP_SERVER_HOST, IPERF_UDP_SERVER_PORT);
+            elog_i(TAG_UDP, "  Duration   : %lu.%lus", run_time / NX_IP_PERIODIC_RATE,
+                   (run_time % NX_IP_PERIODIC_RATE) * 10 / NX_IP_PERIODIC_RATE);
+            elog_i(TAG_UDP, "  Packet Size: %d bytes", IPERF_UDP_PACKET_SIZE);
+            elog_i(TAG_UDP, "  Packets TX : %lu", packets_txed);
+            elog_i(TAG_UDP, "  Bytes TX   : %lu bytes (%lu KB)", bytes_txed, bytes_txed / 1024);
+            elog_i(TAG_UDP, "  Throughput  : %lu.%lu Mbps", throughput_mbps_x10 / 10, throughput_mbps_x10 % 10);
+            elog_i(TAG_UDP, "  Errors     : %lu", error_counter);
+            elog_i(TAG_UDP, "========================================");
+        }
+
+        /* Send end-of-test packets (negative id, like nx_iperf) */
+        {
+            int i;
+            NX_PACKET *rx_pkt;
+            ULONG end_pkt_size = 100;
+            for (i = 0; i < 10; i++)
+            {
+                udp_iperf_send_packet(&socket, -udp_id, server_ip,
+                                      IPERF_UDP_SERVER_PORT, end_pkt_size);
+                if (nx_udp_socket_receive(&socket, &rx_pkt, 10) == NX_SUCCESS)
+                {
+                    nx_packet_release(rx_pkt);
+                    break;
+                }
+            }
+        }
+
+        /* Cleanup socket */
         if (!ppp_destroying) {
             nx_udp_socket_unbind(&socket);
             nx_udp_socket_delete(&socket);
-        } else {
-            elog_w(TAG_UDP, "PPP destroying — skipping socket cleanup");
         }
 
-udp_wait_link_down:
-        /* Wait for link-down event if not already received */
+udp_iperf_wait_down:
+        /* Signal UDP iperf done — NTP thread waits for this */
+        tx_event_flags_set(&ppp_events, PPP_EVT_UDP_IPERF_DONE, TX_OR);
+
+        /* Wait for link-down before next cycle */
         tx_event_flags_get(&ppp_events, PPP_EVT_LINK_DOWN, TX_OR_CLEAR,
                            &actual_flags, TX_WAIT_FOREVER);
     }
-}
-
-/**
-  * @brief  DHCP thread — waits for ECM link up, starts DHCP, logs IP
-  */
-static void ecm_dhcp_thread_entry(ULONG param)
-{
-    UINT status;
-    ULONG ip_address, network_mask, gateway;
-    UINT retries = 0;
-
-    (void)param;
-
-    /* Wait for the actual CDC-ECM USB link to come up.
-     * NOTE: nx_ip_status_check(NX_IP_LINK_ENABLED) returns immediately because
-     * NX_LINK_ENABLE is called during nx_ip_create() and sets
-     * nx_interface_link_up = TRUE before the actual USB link is established.
-     * Instead, we poll the USB network driver's link status, which is set to
-     * NX_TRUE only after _ux_network_driver_link_up() is called by the CDC-ECM
-     * thread when it receives the NETWORK_CONNECTION interrupt notification. */
-    elog_i(TAG_ECM, "Waiting for ECM link...");
-
-    retries = 0;
-    while (retries < 600)  /* up to 600 × 100ms = 60s */
-    {
-        /* Get the USB network device through the interface's additional_link_info.
-         * This is set by _ux_network_driver_entry(NX_LINK_INTERFACE_ATTACH). */
-        USB_NETWORK_DEVICE_TYPE *usb_dev =
-            (USB_NETWORK_DEVICE_TYPE *)ecm_ip.nx_ip_interface[0].nx_interface_additional_link_info;
-
-        if (usb_dev != NX_NULL && usb_dev->ux_network_device_usb_link_up == NX_TRUE)
-        {
-            elog_i(TAG_ECM, "ECM link is up (after %u.%us)", retries / 10, retries % 10);
-            break;
-        }
-
-        tx_thread_sleep(NX_IP_PERIODIC_RATE / 10);  /* 100ms */
-        retries++;
-    }
-
-    if (retries >= 600)
-    {
-        elog_e(TAG_ECM, "ECM link did not come up within 60s");
-        return;
-    }
-
-    /* Small settle delay — let the CDC-ECM thread finish its initialization */
-    tx_thread_sleep(NX_IP_PERIODIC_RATE / 10);  /* 100ms */
-
-    /* Start DHCP client */
-    status = nx_dhcp_start(&ecm_dhcp);
-    if (status != NX_SUCCESS)
-    {
-        elog_e(TAG_ECM, "DHCP start failed: 0x%02X", status);
-        return;
-    }
-    elog_i(TAG_ECM, "DHCP started, waiting for IP address...");
-
-    /* Poll for an address — DHCP state changes from SELECTING → REQUESTING → BOUND */
-    retries = 0;
-    while (retries < 120)  /* up to 120 × 500ms = 60s */
-    {
-        tx_thread_sleep(NX_IP_PERIODIC_RATE / 2);  /* 500ms */
-
-        nx_ip_address_get(&ecm_ip, &ip_address, &network_mask);
-        if (ip_address != 0)
-        {
-            ULONG dns_server;
-            /* Got an IP! */
-            elog_i(TAG_ECM, "ECM IP: %lu.%lu.%lu.%lu",
-                   (ip_address >> 24) & 0xFF, (ip_address >> 16) & 0xFF,
-                   (ip_address >> 8) & 0xFF, ip_address & 0xFF);
-            elog_i(TAG_ECM, "ECM Mask: %lu.%lu.%lu.%lu",
-                   (network_mask >> 24) & 0xFF, (network_mask >> 16) & 0xFF,
-                   (network_mask >> 8) & 0xFF, network_mask & 0xFF);
-
-            /* Try to get gateway */
-            nx_ip_gateway_address_get(&ecm_ip, &gateway);
-            if (gateway != 0)
-            {
-                elog_i(TAG_ECM, "ECM GW: %lu.%lu.%lu.%lu",
-                       (gateway >> 24) & 0xFF, (gateway >> 16) & 0xFF,
-                       (gateway >> 8) & 0xFF, gateway & 0xFF);
-            }
-
-            /* Try to get DNS server from DHCP */
-            {
-                UINT dns_size = sizeof(dns_server);
-                if (nx_dhcp_interface_user_option_retrieve(&ecm_dhcp, 0,
-                        NX_DHCP_OPTION_DNS_SVR, (UCHAR *)&dns_server, &dns_size) == NX_SUCCESS)
-                {
-                    elog_i(TAG_ECM, "ECM DNS: %lu.%lu.%lu.%lu",
-                           (dns_server >> 24) & 0xFF, (dns_server >> 16) & 0xFF,
-                           (dns_server >> 8) & 0xFF, dns_server & 0xFF);
-                }
-            }
-
-            ecm_ip_logged = 1;
-            return;
-        }
-        retries++;
-    }
-
-    elog_w(TAG_ECM, "DHCP: no IP address after 60s");
-}
-
-/**
-  * @brief  Initialize CDC-ECM IP instance and start DHCP
-  * @note   Called from usbx_app_thread_entry after USB device connect.
-  *         Idempotent — only runs once. Can be called before or after
-  *         CDC-ECM link-up; the DHCP thread will wait for link.
-  * @return NX_SUCCESS on success
-  */
-UINT app_netxduo_ecm_init(void)
-{
-    UINT status;
-
-    if (ecm_ip_created) return NX_SUCCESS;
-
-    elog_i(TAG_ECM, "Creating ECM IP instance...");
-
-    /* Create dedicated packet pool for ECM */
-    status = nx_packet_pool_create(&ecm_pool, "ECM Packet Pool",
-                                    ECM_PACKET_PAYLOAD,
-                                    (VOID *)ecm_pool_memory,
-                                    ECM_PACKET_POOL_SIZE);
-    if (status != NX_SUCCESS)
-    {
-        elog_e(TAG_ECM, "ECM pool create failed: 0x%02X", status);
-        return status;
-    }
-
-    /* Set low watermark to avoid starvation */
-    nx_packet_pool_low_watermark_set(&ecm_pool, 4);
-
-    /* Create IP instance with the USBX network driver */
-    status = nx_ip_create(&ecm_ip, "ECM IP Instance",
-                          IP_ADDRESS(0, 0, 0, 0),
-                          IP_ADDRESS(255, 255, 255, 0),
-                          &ecm_pool,
-                          _ux_network_driver_entry,
-                          (VOID *)ecm_ip_memory, ECM_IP_MEMORY_SIZE, 1);
-    if (status != NX_SUCCESS)
-    {
-        elog_e(TAG_ECM, "ECM IP create failed: 0x%02X", status);
-        return status;
-    }
-
-    /* Enable ARP */
-    status = nx_arp_enable(&ecm_ip, (VOID *)ecm_arp_cache, ECM_ARP_CACHE_SIZE);
-    if (status != NX_SUCCESS)
-    {
-        elog_e(TAG_ECM, "ECM ARP enable failed: 0x%02X", status);
-        return status;
-    }
-
-    /* Enable UDP */
-    status = nx_udp_enable(&ecm_ip);
-    if (status != NX_SUCCESS)
-    {
-        elog_e(TAG_ECM, "ECM UDP enable failed: 0x%02X", status);
-        return status;
-    }
-
-    /* Enable ICMP */
-    nx_icmp_enable(&ecm_ip);
-
-    /* Enable IGMP */
-    nx_igmp_enable(&ecm_ip);
-
-    /* Enable IP fragment */
-    nx_ip_fragment_enable(&ecm_ip);
-
-    /* Enable TCP */
-    nx_tcp_enable(&ecm_ip);
-
-    /* Create DHCP thread */
-    status = tx_thread_create(&ecm_dhcp_thread, "ECM DHCP",
-                               ecm_dhcp_thread_entry, 0,
-                               ecm_dhcp_stack, ECM_DHCP_THREAD_STACK,
-                               ECM_DHCP_THREAD_PRIO, ECM_DHCP_THREAD_PRIO,
-                               TX_NO_TIME_SLICE, TX_AUTO_START);
-    if (status != TX_SUCCESS)
-    {
-        elog_e(TAG_ECM, "DHCP thread create failed: 0x%02X", status);
-        /* Non-fatal — ECM IP is created, just no auto-IP */
-    }
-
-    ecm_ip_created = 1;
-    elog_i(TAG_ECM, "ECM IP instance created");
-    return NX_SUCCESS;
-}
-
-/**
-  * @brief  Destroy CDC-ECM IP instance and release resources.
-  *         Call on USB disconnect to prevent resource leaks on reconnect.
-  */
-void app_netxduo_ecm_destroy(void)
-{
-    if (!ecm_ip_created) return;
-
-    elog_i(TAG_ECM, "Destroying ECM instance...");
-
-    nx_dhcp_stop(&ecm_dhcp);
-    nx_dhcp_delete(&ecm_dhcp);
-    elog_d(TAG_ECM, "DHCP stopped");
-
-    nx_ip_delete(&ecm_ip);
-    elog_d(TAG_ECM, "IP deleted");
-
-    nx_packet_pool_delete(&ecm_pool);
-    elog_d(TAG_ECM, "Packet pool deleted");
-
-    ecm_ip_created = 0;
-    ecm_ip_logged  = 0;
-
-    elog_i(TAG_ECM, "ECM instance destroyed");
 }
 
 /* USER CODE END 1 */

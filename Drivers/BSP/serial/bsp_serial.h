@@ -7,9 +7,9 @@
   *   Usage:
   *     // Get a concrete implementation (e.g. UART3)
   *     extern bsp_serial_t *bsp_serial_uart3;
-  *     bsp_serial_uart3->init();
-  *     bsp_serial_uart3->write(data, len);
-  *     uint16_t n = bsp_serial_uart3->read(buf, sizeof(buf), 100);
+  *     bsp_serial_uart3->init(bsp_serial_uart3);
+  *     bsp_serial_uart3->write(bsp_serial_uart3, data, len);
+  *     uint16_t n = bsp_serial_uart3->read(bsp_serial_uart3, buf, sizeof(buf), 100);
   *
   *   To add a new backend (e.g. USB CDC):
   *     1. Create bsp_usb_cdc.c implementing the same vtable
@@ -31,34 +31,38 @@ extern "C" {
 
 typedef struct bsp_serial {
     const char *name;       /**< Human-readable name (e.g. "UART3", "USB CDC") */
-    void       *user_data;  /**< Opaque per-instance context (e.g. DLCI ctx) */
+    void       *user_data;  /**< Opaque per-instance context (e.g. modem ptr) */
 
     /**
      * @brief  Initialize the serial port
+     * @param  self  Pointer to this serial instance
      */
-    void (*init)(void);
+    void (*init)(struct bsp_serial *self);
 
     /**
      * @brief  Read data from the serial port
+     * @param  self       Pointer to this serial instance
      * @param  buf        Destination buffer
      * @param  len        Max bytes to read
      * @param  timeout_ms Timeout in ms (0xFFFFFFFF = wait forever, 0 = non-blocking)
      * @return Number of bytes actually read (0 on timeout)
      */
-    uint16_t (*read)(uint8_t *buf, uint16_t len, uint32_t timeout_ms);
+    uint16_t (*read)(struct bsp_serial *self, uint8_t *buf, uint16_t len, uint32_t timeout_ms);
 
     /**
      * @brief  Write data to the serial port (blocks until TX complete)
-     * @param  data   Source buffer
-     * @param  len    Number of bytes to send
+     * @param  self  Pointer to this serial instance
+     * @param  data  Source buffer
+     * @param  len   Number of bytes to send
      */
-    void (*write)(const uint8_t *data, uint16_t len);
+    void (*write)(struct bsp_serial *self, const uint8_t *data, uint16_t len);
 
     /**
      * @brief  Check how many bytes are available to read
+     * @param  self  Pointer to this serial instance
      * @return Number of bytes in the receive buffer
      */
-    uint16_t (*rx_available)(void);
+    uint16_t (*rx_available)(struct bsp_serial *self);
 
 } bsp_serial_t;
 

@@ -30,6 +30,7 @@
 #include "a7683e.h"
 #if A7683E_TRANSPORT == A7683E_TRANSPORT_USB
 #include "bsp_usb.h"
+#include "app_usbx_host.h"
 #endif
 #include "app_netxduo.h"
 #include "cmux.h"
@@ -47,6 +48,8 @@
 
 #define TAG             "APP"
 
+#define USB_THROUGHPUT_TEST_ENABLE    1
+
 /** NTP server hostname — must match definition in app_netxduo.c */
 #ifndef NTP_SERVER_HOST
 #define NTP_SERVER_HOST         "ntp.aliyun.com"
@@ -55,6 +58,11 @@
 /* Main app thread — heartbeat LED + modem management */
 #define APP_THREAD_PRIO         20
 #define APP_THREAD_STACK_SIZE   512
+
+/** Set to 1 to run USB bulk TX throughput test before modem init */
+#ifndef USB_THROUGHPUT_TEST_ENABLE
+#define USB_THROUGHPUT_TEST_ENABLE  0
+#endif
 
 /* Modem init thread — runs AT init sequence then PPP dial */
 #define MODEM_THREAD_PRIO       10
@@ -180,14 +188,14 @@ void tx_app_thread_entry(ULONG thread_input)
 
 #if A7683E_TRANSPORT == A7683E_TRANSPORT_UART
   /* --- UART3 direct mode --- */
-  bsp_serial_uart3->init();
+  bsp_serial_uart3->init(bsp_serial_uart3);
   elog_d(TAG, "Serial port '%s' initialized", bsp_serial_uart3->name);
   a7683e_set_serial(bsp_serial_uart3);
   app_netxduo_set_serial(bsp_serial_uart3);
 
 #elif A7683E_TRANSPORT == A7683E_TRANSPORT_CMUX
   /* --- CMUX mode (UART3 + multiplexing) --- */
-  bsp_serial_uart3->init();
+  bsp_serial_uart3->init(bsp_serial_uart3);
   elog_d(TAG, "Serial port '%s' initialized (CMUX mode)", bsp_serial_uart3->name);
   a7683e_set_serial(bsp_serial_uart3);
   app_netxduo_set_serial(bsp_serial_uart3);
@@ -309,16 +317,13 @@ static void modem_disconnect_cleanup(void)
     /* Step 1: Destroy PPP + IP + network threads */
     app_netxduo_destroy_ppp();
 
-    /* Step 2: Destroy ECM IP instance (prevents resource leak on reconnect) */
-    app_netxduo_ecm_destroy();
-
-    /* Step 3: Cleanup modem AT state (escape PPP, deactivate PDP).
+    /* Step 2: Cleanup modem AT state (escape PPP, deactivate PDP).
      *         Only attempts AT commands if serial port is still valid;
      *         on USB disconnect the device is already gone, so this
      *         primarily clears internal state. */
     a7683e_cleanup();
 
-    /* Step 4: Clear serial pointers — device is gone.
+    /* Step 3: Clear serial pointers — device is gone.
      *         Prevents use-after-free on next reconnect cycle. */
     a7683e_set_serial(NULL);
     app_netxduo_set_serial(NULL);
@@ -328,13 +333,11 @@ static void modem_disconnect_cleanup(void)
 
 /**
   * @brief  Modem initialization thread
-  * @note   ECM-first strategy with PPP fallback
   *
   * Flow:
   *   1. AT init (sync, SIM, APN, network registration)
-  *   2. Try ECM mode: AT+CUSB=1 → wait for USB ECM link-up
-  *   3. If ECM fails → fallback to PPP (dial → PPP negotiation)
-  *   4. On USB disconnect: cleanup and loop back to step 1
+  *   2. PPP dial → PPP negotiation
+  *   3. On USB disconnect: cleanup and loop back to step 1
   */
 static void modem_thread_entry(ULONG param)
 {
@@ -354,6 +357,17 @@ static void modem_thread_entry(ULONG param)
     while (!a7683e_is_serial_ready())
       tx_thread_sleep(100);
     elog_i(TAG, "USB serial port ready");
+
+#if USB_THROUGHPUT_TEST_ENABLE
+    /* USB bulk TX throughput test — measures raw USB transfer rate.
+     * Use the same interface as the AT port (detected from PID). */
+    {
+        int at_if = app_usbx_get_at_ifnum();
+        elog_i(TAG, "USB throughput test on AT port ifnum=%d", at_if);
+        bsp_usb_throughput_test((uint8_t)at_if, 10);
+    }
+#endif
+
 #endif
 
     //a7683e_power_on();
@@ -370,7 +384,7 @@ static void modem_thread_entry(ULONG param)
       continue;
     }
 
-    elog_w(TAG, "ECM unavailable, falling back to PPP");
+    elog_i(TAG, "Starting PPP mode...");
     status = try_ppp_mode();
     if (status != NX_SUCCESS)
     {

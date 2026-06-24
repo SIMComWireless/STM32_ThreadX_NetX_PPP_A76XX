@@ -72,7 +72,7 @@ UINT  ux_host_event_callback(ULONG event, UX_HOST_CLASS *p_host_class, VOID *p_i
 /* USER CODE BEGIN PD */
 #define APP_QUEUE_SIZE                               5
 #define USBX_APP_STACK_SIZE                          1024
-#define USBX_MEMORY_SIZE                             (160 * 1024)
+#define USBX_MEMORY_SIZE                             (80 * 1024)
 #define NEW_RECEIVED_DATA                            0x01
 #define NEW_DATA_TO_SEND                             0x02
 #define BUTTON_KEY_PIN                               1
@@ -84,6 +84,17 @@ UINT  ux_host_event_callback(ULONG event, UX_HOST_CLASS *p_host_class, VOID *p_i
 #ifndef A7683E_USB_MODEM_IFNUM
 #define A7683E_USB_MODEM_IFNUM                       4
 #endif
+
+/* PID-to-AT-port mapping for multi-module support */
+static inline int app_usbx_get_at_ifnum(void)
+{
+    extern ULONG ux_host_class_modem_detected_pid;
+    switch (ux_host_class_modem_detected_pid) {
+        case 0x9011: return 5;   /* A7683E — AT on interface 5 */
+        case 0x9028: return 1;   /* A7683E variant — AT on interface 1 */
+        default:     return A7683E_USB_AT_IFNUM;  /* fallback */
+    }
+}
 
 /* USER CODE END PD */
 

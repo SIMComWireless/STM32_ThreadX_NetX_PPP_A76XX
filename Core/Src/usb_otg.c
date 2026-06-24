@@ -40,7 +40,7 @@ void MX_USB_OTG_FS_USB_Init(void)
   hhcd_USB_OTG_FS.Instance = USB_OTG_FS;
   hhcd_USB_OTG_FS.Init.Host_channels = 12;
   hhcd_USB_OTG_FS.Init.speed = USB_OTG_SPEED_FULL;
-  hhcd_USB_OTG_FS.Init.dma_enable = DISABLE;
+  hhcd_USB_OTG_FS.Init.dma_enable = ENABLE;
   hhcd_USB_OTG_FS.Init.phy_itface = HCD_PHY_EMBEDDED;
   hhcd_USB_OTG_FS.Init.Sof_enable = DISABLE;
   hhcd_USB_OTG_FS.Init.vbus_sensing_enable = DISABLE;
@@ -115,7 +115,7 @@ void HAL_HCD_MspInit(HCD_HandleTypeDef* hhcd)
     }
     /* USB_OTG_FS interrupt Init — priority 1 (high, just below UART/DMA at 0)
      * to prevent USB transaction drops during heavy UART traffic in PPP mode. */
-    HAL_NVIC_SetPriority(OTG_FS_IRQn, 1, 0);
+    HAL_NVIC_SetPriority(OTG_FS_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
   /* USER CODE BEGIN USB_OTG_FS_MspInit 1 */
 
