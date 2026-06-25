@@ -100,6 +100,14 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN Private defines */
 
+/* SPI Flash (W25Q128) control pins */
+#define FLASH_CS_Pin            GPIO_PIN_14
+#define FLASH_CS_GPIO_Port      GPIOD
+#define FLASH_WP_Pin            GPIO_PIN_15
+#define FLASH_WP_GPIO_Port      GPIOD
+#define FLASH_HOLD_Pin          GPIO_PIN_12
+#define FLASH_HOLD_GPIO_Port    GPIOF
+
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

@@ -35,6 +35,8 @@
 #include "app_netxduo.h"
 #include "cmux.h"
 #include "cmux_serial.h"
+#include "bsp_spi_flash.h"
+#include "app_filex.h"
 
 /* USER CODE END Includes */
 
@@ -185,6 +187,15 @@ void tx_app_thread_entry(ULONG thread_input)
   elog_d(TAG, "APN: %s", A7683E_APN);
   elog_d(TAG, "NTP: %s", NTP_SERVER_HOST);
   elog_d(TAG, "========================================");
+
+  /* Initialize SPI NOR flash file system (SFDP auto-detect + FileX) */
+  {
+      UINT fx_status = app_filex_init();
+      if (fx_status != FX_SUCCESS)
+          elog_w(TAG, "FileX init failed: 0x%02X (non-fatal, continuing)", fx_status);
+      else
+          elog_i(TAG, "FileX media ready");
+  }
 
 #if A7683E_TRANSPORT == A7683E_TRANSPORT_UART
   /* --- UART3 direct mode --- */

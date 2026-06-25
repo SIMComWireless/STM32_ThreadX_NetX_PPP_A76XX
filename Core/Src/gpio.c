@@ -123,6 +123,27 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(USB_VBUS_GPIO_Port, &GPIO_InitStruct);
 
+  /* USER CODE BEGIN GPIO_Init */
+
+  /* SPI Flash (W25Q128) control pins — outputs, default inactive */
+  HAL_GPIO_WritePin(FLASH_CS_GPIO_Port, FLASH_CS_Pin, GPIO_PIN_SET);     /* CS high = deselected */
+  HAL_GPIO_WritePin(FLASH_WP_GPIO_Port, FLASH_WP_Pin, GPIO_PIN_SET);     /* WP high = write enabled */
+  HAL_GPIO_WritePin(FLASH_HOLD_GPIO_Port, FLASH_HOLD_Pin, GPIO_PIN_SET); /* HOLD high = not held */
+
+  GPIO_InitStruct.Pin = FLASH_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(FLASH_CS_GPIO_Port, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = FLASH_WP_Pin;
+  HAL_GPIO_Init(FLASH_WP_GPIO_Port, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = FLASH_HOLD_Pin;
+  HAL_GPIO_Init(FLASH_HOLD_GPIO_Port, &GPIO_InitStruct);
+
+  /* USER CODE END GPIO_Init */
+
 }
 
 /* USER CODE BEGIN 2 */
