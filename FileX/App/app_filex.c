@@ -18,6 +18,7 @@
   */
 
 #include "app_filex.h"
+#include "nor_custom_config.h"
 #include "fx_stm32_levelx_nor_driver.h"
 #include "bsp_spi_flash.h"
 #include "lx_stm32_nor_custom_driver.h"
