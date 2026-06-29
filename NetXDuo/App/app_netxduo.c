@@ -57,6 +57,16 @@
 /** NTP epoch offset (seconds from 1900-01-01 to 1970-01-01) */
 #define NTP_EPOCH_OFFSET        2208988800UL
 
+/** UTC timezone offset in hours — change for your region (e.g. +8 for China) */
+#ifndef NTP_TZ_OFFSET_HOURS
+#define NTP_TZ_OFFSET_HOURS     8
+#endif
+
+/** Enable iperf throughput tests (set to 0 for production builds) */
+#ifndef IPERF_ENABLE
+#define IPERF_ENABLE            0
+#endif
+
 /** Days in each month (non-leap year) */
 static const uint8_t days_in_month[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
 
@@ -169,25 +179,31 @@ static VOID *arp_cache_ptr;
 static VOID *ppp_stack_ptr;
 static VOID *ppp_read_stack_ptr;
 static VOID *ntp_stack_ptr;
+#if IPERF_ENABLE
 static VOID *tcp_client_stack_ptr;
 static VOID *udp_client_stack_ptr;
+#endif
 
 /* PPP link state */
 static TX_EVENT_FLAGS_GROUP ppp_events;
 #define PPP_EVT_LINK_UP         0x01
 #define PPP_EVT_LINK_DOWN       0x02
+#if IPERF_ENABLE
 #define PPP_EVT_TCP_IPERF_DONE  0x04
 #define PPP_EVT_UDP_IPERF_DONE  0x08
 #define PPP_EVT_IPERF_ALL_DONE  (PPP_EVT_TCP_IPERF_DONE | PPP_EVT_UDP_IPERF_DONE)
+#endif
 
 /* Thread handles */
 static TX_THREAD ppp_read_thread;
 static TX_THREAD ntp_thread;
+#if IPERF_ENABLE
 static TX_THREAD tcp_client_thread;
 static TX_THREAD udp_client_thread;
+#endif
 
 /* PPP creation flag — deferred to thread context */
-static uint8_t ppp_created = 0;
+static volatile uint8_t ppp_created = 0;
 
 /* Flag: set when app_netxduo_destroy_ppp() begins teardown.
  * TCP/UDP threads check this before calling nx_* cleanup APIs
@@ -196,14 +212,20 @@ static volatile uint8_t ppp_destroying = 0;
 
 /* Modem reconnect event — USB disconnect signals this to unblock modem thread */
 static TX_EVENT_FLAGS_GROUP modem_events;
-static uint8_t modem_events_created = 0;
+static volatile uint8_t modem_events_created = 0;
 
 /* Global DNS client — created once, reused across all resolve_host() calls.
  * Protected by dns_mutex to prevent concurrent create/delete from
- * NTP, TCP, and UDP threads calling resolve_host() simultaneously. */
+ * NTP, TCP, and UDP threads calling resolve_host() simultaneously.
+ *
+ * dns_cleanup_pending: set by ppp_link_down_callback when the mutex is
+ * held (e.g. NTP thread mid-query). The holder checks this flag after
+ * releasing the mutex and performs cleanup. This avoids deadlock where
+ * the PPP thread would block on the mutex while holding the PPP engine. */
 static NX_DNS  dns_client;
-static uint8_t dns_client_created = 0;
+static volatile uint8_t dns_client_created = 0;
 static TX_MUTEX dns_mutex;
+static volatile uint8_t dns_cleanup_pending = 0;
 
 /* PPP serial I/O buffer */
 #define PPP_RX_BATCH_SIZE   1024
@@ -230,8 +252,10 @@ NX_PACKET_POOL *app_netxduo_get_active_pool(void) { return &pool_0; }
 
 static void ppp_read_thread_entry(ULONG param);
 static void ntp_thread_entry(ULONG param);
+#if IPERF_ENABLE
 static void tcp_iperf_thread_entry(ULONG param);
 static void udp_iperf_thread_entry(ULONG param);
+#endif
 static UINT resolve_host(const char *host, ULONG *ip_address);
 static void ppp_link_up_callback(NX_PPP *ppp_ptr);
 static void ppp_link_down_callback(NX_PPP *ppp_ptr);
@@ -515,15 +539,17 @@ static void ntp_thread_entry(ULONG param)
         tx_event_flags_get(&ppp_events, PPP_EVT_LINK_UP, TX_OR_CLEAR,
                            &actual_flags, TX_WAIT_FOREVER);
 
-        elog_d(TAG_NTP, "PPP link is up, waiting for iperf tests to finish...");
+        elog_d(TAG_NTP, "PPP link is up, starting time sync...");
 
+#if IPERF_ENABLE
         /* Wait for both TCP and UDP iperf tests to complete before using the link */
+        elog_d(TAG_NTP, "Waiting for iperf tests to finish...");
         tx_event_flags_get(&ppp_events, PPP_EVT_IPERF_ALL_DONE, TX_OR_CLEAR,
                            &actual_flags, TX_WAIT_FOREVER);
+        elog_d(TAG_NTP, "iperf tests done");
+#endif
 
-        elog_d(TAG_NTP, "iperf tests done, starting time sync...");
-
-        /* Let routing/DNS settle after iperf */
+        /* Let routing/DNS settle */
         tx_thread_sleep(2000);
 
         /* ---- Step 3: Resolve NTP server hostname (with retries) ---- */
@@ -540,7 +566,7 @@ static void ntp_thread_entry(ULONG param)
         }
         if (status != NX_SUCCESS)
         {
-            elog_w(TAG_DNS, "DNS resolution failed after 10 retries, using fallback NTP IP");
+            elog_w(TAG_DNS, "DNS resolution failed after 3 retries, using fallback NTP IP");
             ntp_ip_address = IP_ADDRESS(203, 107, 6, 88);
             elog_d(TAG_NTP, "NTP server: 203.107.6.88 (fallback)");
         }
@@ -615,7 +641,7 @@ static void ntp_thread_entry(ULONG param)
                         /* ---- Step 7: Set RTC ---- */
                         uint32_t s = unix_time % 60;
                         uint32_t m = (unix_time / 60) % 60;
-                        uint32_t h = ((unix_time / 3600) + 8) % 24; /* UTC+8 */
+                        uint32_t h = ((unix_time / 3600) + NTP_TZ_OFFSET_HOURS) % 24;
 
                         elog_d(TAG_NTP, "Time (UTC+8): %02lu:%02lu:%02lu", h, m, s);
 
@@ -723,6 +749,7 @@ UINT MX_NetXDuo_Init(VOID *memory_ptr)
                                NTP_THREAD_STACK, TX_NO_WAIT);
     if (status != TX_SUCCESS) { netx_init_status = status; return status; }
 
+#if IPERF_ENABLE
     /* TCP iperf thread stack */
     netx_init_step = 51;
     status = tx_byte_allocate(byte_pool, &tcp_client_stack_ptr,
@@ -734,6 +761,7 @@ UINT MX_NetXDuo_Init(VOID *memory_ptr)
     status = tx_byte_allocate(byte_pool, &udp_client_stack_ptr,
                                UDP_IPERF_THREAD_STACK, TX_NO_WAIT);
     if (status != TX_SUCCESS) { netx_init_status = status; return status; }
+#endif
 
     /* ARP cache memory */
     netx_init_step = 6;
@@ -772,6 +800,7 @@ UINT MX_NetXDuo_Init(VOID *memory_ptr)
                                TX_NO_TIME_SLICE, TX_AUTO_START);
     if (status != TX_SUCCESS) { netx_init_status = status; return status; }
 
+#if IPERF_ENABLE
     /* ---- Create TCP iperf TX thread ---- */
     netx_init_step = 11;
     status = tx_thread_create(&tcp_client_thread, "TCP iperf TX",
@@ -789,6 +818,7 @@ UINT MX_NetXDuo_Init(VOID *memory_ptr)
                                UDP_IPERF_THREAD_PRIO, UDP_IPERF_THREAD_PRIO,
                                TX_NO_TIME_SLICE, TX_AUTO_START);
     if (status != TX_SUCCESS) { netx_init_status = status; return status; }
+#endif
 
     /* NOTE: PPP and IP instance creation deferred to app_netxduo_create_ppp()
      * because nx_ppp_create requires a thread context, and IP must be created
@@ -850,6 +880,11 @@ UINT app_netxduo_create_ppp(void)
 
     /* Allow ip fragmentation */
     status = nx_ip_fragment_enable(&ip_0);
+    if (status != NX_SUCCESS)
+    {
+        elog_e(TAG, "IP fragment enable failed: 0x%02X", status);
+        return status;
+    }
 
     /* Enable ARP (required by NetX even for PPP) */
     status = nx_arp_enable(&ip_0, arp_cache_ptr, ARP_CACHE_SIZE);
@@ -1131,14 +1166,24 @@ static UINT dns_client_setup(void)
 
 /**
   * @brief  Destroy the global DNS client (call on PPP link-down).
-  *         Mutex-protected against concurrent resolve_host() callers.
+  *         Uses try-lock to avoid blocking the PPP thread when the mutex
+  *         is held by resolve_host() in another thread. If the lock is
+  *         contended, sets dns_cleanup_pending so the holder will clean
+  *         up after releasing the mutex.
   */
 static void dns_client_cleanup(void)
 {
-    tx_mutex_get(&dns_mutex, TX_WAIT_FOREVER);
+    UINT rc = tx_mutex_get(&dns_mutex, TX_NO_WAIT);
+    if (rc != TX_SUCCESS) {
+        /* Mutex held by resolve_host() — defer cleanup to that thread */
+        dns_cleanup_pending = 1;
+        elog_d(TAG_DNS, "DNS cleanup deferred (mutex held)");
+        return;
+    }
     if (dns_client_created) {
         nx_dns_delete(&dns_client);
         dns_client_created = 0;
+        dns_cleanup_pending = 0;
         elog_d(TAG_DNS, "DNS client destroyed");
     }
     tx_mutex_put(&dns_mutex);
@@ -1207,9 +1252,17 @@ static UINT resolve_host(const char *host, ULONG *ip_address)
     }
 
     tx_mutex_put(&dns_mutex);
+
+    /* If ppp_link_down_callback tried to clean up while we held the mutex,
+     * perform the deferred cleanup now that we've released it. */
+    if (dns_cleanup_pending) {
+        dns_client_cleanup();
+    }
+
     return status;
 }
 
+#if IPERF_ENABLE
 /**
   * @brief  TCP iperf TX test thread — sends max data for 10 seconds after PPP link-up
   * @note   Reference: nx_iperf_thread_tcp_tx_entry() in nx_iperf.c
@@ -1404,12 +1457,12 @@ static void tcp_iperf_thread_entry(ULONG param)
             elog_i(TAG_TCP, "========================================");
         }
 
-        /* Disconnect and cleanup */
-        if (!ppp_destroying) {
-            nx_tcp_socket_disconnect(&socket, NX_NO_WAIT);
-            nx_tcp_client_socket_unbind(&socket);
-            nx_tcp_socket_delete(&socket);
-        }
+        /* Disconnect and cleanup — always attempt to avoid leaking socket
+         * handles in NetX's internal list. If IP instance is already deleted,
+         * these calls return error codes which we silently ignore. */
+        nx_tcp_socket_disconnect(&socket, NX_NO_WAIT);
+        nx_tcp_client_socket_unbind(&socket);
+        nx_tcp_socket_delete(&socket);
 
 tcp_iperf_wait_down:
         /* Signal TCP iperf done — NTP thread waits for this */
@@ -1426,16 +1479,17 @@ tcp_iperf_wait_down:
   * @note   Reference: nx_iperf_thread_udp_tx_entry() in nx_iperf.c
   *         Uses configurable UDP packet size with iperf-compatible payload format.
   *         Runs once per PPP link-up cycle.
+  * @return NX_SUCCESS on success, error code on failure
   */
-static void udp_iperf_send_packet(NX_UDP_SOCKET *sock, int udp_id,
+static UINT udp_iperf_send_packet(NX_UDP_SOCKET *sock, int udp_id,
                                    ULONG server_ip, ULONG port, ULONG pkt_size)
 {
     NX_PACKET *packet_ptr;
     NX_PACKET_POOL *pool = app_netxduo_get_active_pool();
-    if (pool == NULL) return;
+    if (pool == NULL) return NX_PTR_ERROR;
 
     UINT status = nx_packet_allocate(pool, &packet_ptr, NX_IPv4_UDP_PACKET, TX_WAIT_FOREVER);
-    if (status != NX_SUCCESS) return;
+    if (status != NX_SUCCESS) return status;
 
     /* Set packet length */
     if (pkt_size > (ULONG)(packet_ptr->nx_packet_data_end - packet_ptr->nx_packet_prepend_ptr))
@@ -1463,6 +1517,7 @@ static void udp_iperf_send_packet(NX_UDP_SOCKET *sock, int udp_id,
     {
         nx_packet_release(packet_ptr);
     }
+    return status;
 }
 
 /**
@@ -1536,7 +1591,8 @@ static void udp_iperf_thread_entry(ULONG param)
         /* Disable UDP checksum for performance (same as nx_iperf) */
         nx_udp_socket_checksum_disable(&socket);
 
-        elog_i(TAG_UDP, "[iperf] Starting 20s UDP TX test (pkt_size=%d)...", IPERF_UDP_PACKET_SIZE);
+        elog_i(TAG_UDP, "[iperf] Starting %ds UDP TX test (pkt_size=%d)...",
+              (int)(IPERF_TEST_DURATION / TX_TIMER_TICKS_PER_SECOND), IPERF_UDP_PACKET_SIZE);
 
         /* Initialize counters */
         packets_txed  = 0;
@@ -1551,8 +1607,11 @@ static void udp_iperf_thread_entry(ULONG param)
         while (tx_time_get() < expire_time)
         {
             /* Send one UDP iperf packet */
-            udp_iperf_send_packet(&socket, udp_id, server_ip, IPERF_UDP_SERVER_PORT,
-                                  IPERF_UDP_PACKET_SIZE);
+            status = udp_iperf_send_packet(&socket, udp_id, server_ip, IPERF_UDP_SERVER_PORT,
+                                           IPERF_UDP_PACKET_SIZE);
+            if (status != NX_SUCCESS) {
+                error_counter++;
+            }
 
             udp_id = (udp_id + 1) & 0x7FFFFFFF;
             packets_txed++;
@@ -1599,11 +1658,10 @@ static void udp_iperf_thread_entry(ULONG param)
             }
         }
 
-        /* Cleanup socket */
-        if (!ppp_destroying) {
-            nx_udp_socket_unbind(&socket);
-            nx_udp_socket_delete(&socket);
-        }
+        /* Cleanup socket — always attempt to avoid leaking handles.
+         * If IP instance is already deleted, these return error (benign). */
+        nx_udp_socket_unbind(&socket);
+        nx_udp_socket_delete(&socket);
 
 udp_iperf_wait_down:
         /* Signal UDP iperf done — NTP thread waits for this */
@@ -1614,5 +1672,6 @@ udp_iperf_wait_down:
                            &actual_flags, TX_WAIT_FOREVER);
     }
 }
+#endif /* IPERF_ENABLE */
 
 /* USER CODE END 1 */

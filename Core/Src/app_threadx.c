@@ -158,11 +158,11 @@ void tx_app_thread_entry(ULONG thread_input)
       elog_start();
   }
   else {
-      /* elog not available — halt */
+      /* elog not available — halt (watchdog reset will recover if enabled) */
       extern UART_HandleTypeDef hlpuart1;
       const char msg[] = "elog_init failed!\r\n";
       HAL_UART_Transmit(&hlpuart1, (uint8_t *)msg, sizeof(msg) - 1, 100);
-      while (1);
+      while (1) { HAL_Delay(500); }
   }
 
   /* Create elog async output thread (after elog_init so semaphores exist) */
@@ -171,8 +171,8 @@ void tx_app_thread_entry(ULONG thread_input)
                        ELOG_THREAD_PRIO, ELOG_THREAD_PRIO,
                        TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
   {
-      elog_e(TAG, "Failed to create elog async thread");
-      while (1);
+      elog_e(TAG, "Failed to create elog async thread — halting");
+      while (1) { HAL_Delay(500); }
   }
 
   elog_d(TAG, "========================================");
@@ -241,14 +241,17 @@ void tx_app_thread_entry(ULONG thread_input)
 /* USER CODE BEGIN 1 */
 
 /** Fatal error handler — blink red LED and halt.
- *  Kept for truly unrecoverable errors (e.g. pool exhaustion). */
+ *  Kept for truly unrecoverable errors (e.g. pool exhaustion).
+ *  If a watchdog (IWDG) is configured, the blinking loop will eventually
+ *  trigger a watchdog reset, allowing the system to recover automatically. */
 static void modem_fatal(void)
 {
-  elog_e(TAG, "FATAL — system halted");
+  elog_e(TAG, "FATAL — system halted (watchdog will reset if enabled)");
   while (1)
   {
     HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-    tx_thread_sleep(200);
+    /* Short sleep to keep LED visible; watchdog reset will interrupt this */
+    HAL_Delay(200);
   }
 }
 

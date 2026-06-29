@@ -21,27 +21,23 @@ extern "C" {
 
 /* ---------- Configuration ------------------------------------------------- */
 
-/** DMA receive buffer size */
+/** DMA receive buffer size (per half-buffer in double-buffer scheme) */
 #ifndef BSP_UART3_RX_BUF_SIZE
 #define BSP_UART3_RX_BUF_SIZE       512
 #endif
 
-/** Ring buffer size (must be >= RX_BUF_SIZE).
- *  4096 bytes — large enough to absorb scheduling jitter in ppp_read_thread. */
+/** Ring buffer size — must be >= RX_BUF_SIZE.
+ *  4096 bytes absorbs scheduling jitter in ppp_read_thread at 115200 baud. */
 #ifndef BSP_UART3_RING_BUF_SIZE
 #define BSP_UART3_RING_BUF_SIZE     4096
 #endif
 
-#define BSP_UART3_DEBUG             1
+/** Set to 1 to enable UART3 RX/TX hex dump logging (development only) */
+#ifndef BSP_UART3_DEBUG
+#define BSP_UART3_DEBUG             0
+#endif
 
-/* ---------- Exported serial instance ------------------------------------- */
-
-/**
- * @brief  USART3 serial instance
- */
-extern bsp_serial_t *const bsp_serial_uart3;
-
-/* ---------- RX data hook (for CMUX or other protocols) ------------------- */
+/* ---------- RX hook (for CMUX or other framing protocols) ---------------- */
 
 /**
  * @brief  RX data hook callback type.
@@ -58,6 +54,19 @@ typedef void (*bsp_uart3_rx_hook_t)(const uint8_t *data, uint16_t len);
  *         is bypassed). The hook must handle all received data.
  */
 void bsp_uart3_set_rx_hook(bsp_uart3_rx_hook_t hook);
+
+/* ---------- Diagnostics -------------------------------------------------- */
+
+/**
+ * @brief  Get UART3 RX drop count — times ring buffer was full and data was lost.
+ * @return Cumulative drop count since uart3_init().
+ */
+uint32_t bsp_uart3_get_rx_drop_count(void);
+
+/* ---------- Exported serial instance ------------------------------------- */
+
+/** USART3 serial instance — call ->init() before use */
+extern bsp_serial_t *const bsp_serial_uart3;
 
 #ifdef __cplusplus
 }

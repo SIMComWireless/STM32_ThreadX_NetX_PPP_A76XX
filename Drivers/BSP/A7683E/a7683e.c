@@ -83,6 +83,15 @@ static UINT wait_for_response(const char *keyword, char *buf, uint16_t buf_size,
 
     while (tx_time_get() < deadline)
     {
+        /* If buffer is full, shift old data out to make room for new bytes.
+         * Keeps the most recent data (most likely to contain the keyword). */
+        if (pos >= buf_size - 1) {
+            uint16_t half = buf_size / 2;
+            memmove(buf, buf + half, buf_size - 1 - half);
+            pos = buf_size - 1 - half;
+            buf[pos] = '\0';
+        }
+
         /* Read available bytes (up to remaining buffer space) */
         uint16_t n = modem_serial->read(modem_serial, (uint8_t *)buf + pos, buf_size - 1 - pos, 50);
         if (n == 0) continue;
@@ -367,7 +376,7 @@ UINT a7683e_init(void)
          * calls bsp_usb_get() + a7683e_set_serial() when the new instance
          * is ready. Timeout after 30s to avoid hanging forever. */
         elog_d(TAG, "Waiting for modem to boot and re-enumerate...");
-        modem_serial = NULL;  /* Clear stale pointer — will be re-set by USB callback */
+        a7683e_set_serial(NULL);  /* Clear stale pointer — will be re-set by USB callback */
         for (int i = 0; i < 300 && !modem_serial; i++) {
             tx_thread_sleep(100);
         }
