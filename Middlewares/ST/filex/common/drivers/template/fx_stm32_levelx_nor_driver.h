@@ -24,7 +24,7 @@ extern "C" {
 /* #define LX_NOR_SIMULATOR_DRIVER */
 /* #define LX_NOR_OSPI_DRIVER */
 /* #define LX_NOR_QSPI_DRIVER */
-/* #define LX_NOR_CUSTOM_DRIVER */
+#define LX_NOR_CUSTOM_DRIVER
 /* #define LX_NOR_XSPI_DRIVER */
 
 #ifdef LX_NOR_SIMULATOR_DRIVER
@@ -75,7 +75,13 @@ extern UCHAR lx_stm32_nor_custom_extended_cache_memory[LX_STM32_CUSTOM_OBSOLETE_
  */
 
 /* USER CODE BEIGN NOR_CUSTOM_DRIVERS */
+#include "lx_stm32_nor_custom_driver.h"
 
+#define LX_NOR_CUSTOM_DRIVERS   { \
+    .name = NOR_CUSTOM_DRIVER_NAME, \
+    .id = NOR_CUSTOM_DRIVER_ID, \
+    .nor_driver_initialize = lx_stm32_nor_custom_driver_initialize \
+}
 /* USER CODE END NOR_CUSTOM_DRIVERS */
 
 #endif
