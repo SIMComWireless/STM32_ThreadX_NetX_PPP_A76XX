@@ -1,14 +1,14 @@
 # STM32 ThreadX NetX PPP A7683E
 
-Cellular IoT project for **SIMCom A7683E** modem on **STM32L4R5ZIT6** (Cortex-M4 @ 120MHz). Establishes a PPP data link via Azure RTOS ThreadX + NetX Duo, performs NTP time synchronization over cellular, and provides TCP/UDP iperf throughput tests.
+Cellular IoT project for **SIMCom A7683E** modem on **STM32L4R5ZIT6** (Cortex-M4 @ 120MHz). Establishes a PPP data link via Azure RTOS ThreadX + NetX Duo, performs NTP time synchronization over cellular, and optionally provides TCP/UDP iperf throughput tests.
 
 ## Features
 
 - **PPP over cellular** — A7683E modem dial via AT commands, PPP negotiation with IPCP
 - **Dual transport** — USART3 (direct) or USB (composite device) for AT/PPP
 - **Multi-module support** — Auto-detect VID/PID (0x9011, 0x9028) with per-module AT port mapping
-- **NTP time sync** — DNS resolution + SNTP client, RTC synchronization
-- **TCP/UDP iperf TX** — 20-second throughput tests against iperf-compatible servers
+- **NTP time sync** — DNS resolution + SNTP client, RTC synchronization with configurable timezone
+- **TCP/UDP iperf TX** — Optional throughput tests (compile-time guard `IPERF_ENABLE`)
 - **EasyLogger** — Async colored logging via LPUART1 (DMA TX)
 
 ## Architecture
@@ -32,22 +32,24 @@ A7683E Modem
                     |
               RTC set from Unix timestamp
                     |
-              TCP/UDP iperf TX tasks -> throughput measurement
+              TCP/UDP iperf TX tasks -> throughput measurement (optional)
 ```
 
 ## Thread Overview
 
+ThreadX priority: **lower number = higher priority**.
+
 | Thread | Priority | Stack | Purpose |
 | --- | --- | --- | --- |
-| `tx_app_thread` | 10 | 512B | EasyLogger init, USB/UART3 BSP init, LED heartbeat |
-| `Modem Init` | 12 | 1024B | AT command init, PPP dial, nx_ppp_start() |
 | `PPP Read` | 5 | 1024B | Reads serial bytes, feeds to nx_ppp_byte_receive() |
-| `NTP Sync` | 31 | 3072B | Waits for iperf done, DNS resolve, SNTP sync |
-| `TCP iperf TX` | 32 | 3072B | 20s TCP TX throughput test after PPP link-up |
-| `UDP iperf TX` | 33 | 3072B | 20s UDP TX throughput test after TCP iperf |
-| `elog async` | 30 | 1024B | Low-priority log output (drains async ring buffer) |
+| `Modem Init` | 10 | 2048B | AT command init, PPP dial, nx_ppp_start() |
+| `elog async` | 11 | 1024B | Low-priority log output (drains async ring buffer) |
+| `tx_app_thread` | 20 | 512B | EasyLogger init, USB/UART3 BSP init, LED heartbeat |
+| `NTP Sync` | 31 | 3072B | DNS resolve, SNTP sync, RTC set |
+| `TCP iperf TX` | 32 | 3072B | TCP TX throughput test (when `IPERF_ENABLE=1`) |
+| `UDP iperf TX` | 33 | 3072B | UDP TX throughput test (when `IPERF_ENABLE=1`) |
 
-**Execution order:** PPP link-up → TCP iperf (20s) → UDP iperf (20s) → NTP sync
+**Execution order:** PPP link-up → TCP iperf → UDP iperf → NTP sync. When `IPERF_ENABLE=0` (default), iperf threads are not created and NTP sync runs immediately after PPP link-up.
 
 ## Hardware
 
@@ -62,7 +64,7 @@ A7683E Modem
 
 ## Interrupt Priority
 
-```
+```text
 Preempt 0 (highest):  DMA1_Ch1-4 (USART3/LPUART1 RX/TX), OTG_FS (USB)
 Preempt 1:            USART3, LPUART1, RNG
 Preempt 4:            SysTick (ThreadX scheduler tick)
@@ -94,23 +96,42 @@ Preempt 15 (lowest):  TIM6 (HAL tick), PendSV, SVC
 | `0x9011` | interface 5 | interface 4 |
 | `0x9028` | interface 1 | — |
 
-### iperf
+### NTP
 
 | Macro | Default | File | Purpose |
 | --- | --- | --- | --- |
+| `NTP_SERVER_HOST` | `"ntp.aliyun.com"` | `NetXDuo/App/app_netxduo.c` | NTP server hostname |
+| `NTP_TZ_OFFSET_HOURS` | `8` | `NetXDuo/App/app_netxduo.c` | UTC timezone offset (hours) |
+
+### iperf (compile-time guarded)
+
+Set `IPERF_ENABLE=1` to include iperf threads. Default is `0` (disabled) to save 6KB stack memory.
+
+| Macro | Default | File | Purpose |
+| --- | --- | --- | --- |
+| `IPERF_ENABLE` | `0` | `NetXDuo/App/app_netxduo.c` | Enable iperf threads |
 | `IPERF_TCP_SERVER_HOST` | `"47.109.101.196"` | `NetXDuo/App/app_netxduo.c` | TCP iperf server |
 | `IPERF_TCP_SERVER_PORT` | `9010` | `NetXDuo/App/app_netxduo.c` | TCP iperf port |
 | `IPERF_UDP_SERVER_HOST` | `"47.109.101.196"` | `NetXDuo/App/app_netxduo.c` | UDP iperf server |
 | `IPERF_UDP_SERVER_PORT` | `9011` | `NetXDuo/App/app_netxduo.c` | UDP iperf port |
-| `IPERF_TEST_DURATION` | `20 * TX_TIMER_TICKS_PER_SECOND` | `NetXDuo/App/app_netxduo.c` | Test duration (20s) |
+| `IPERF_TEST_DURATION` | `10 * TX_TIMER_TICKS_PER_SECOND` | `NetXDuo/App/app_netxduo.c` | Test duration (10s) |
 | `IPERF_UDP_PACKET_SIZE` | `1470` | `NetXDuo/App/app_netxduo.c` | UDP payload size |
 
 ### Logging
 
 | Macro | Default | File | Purpose |
 | --- | --- | --- | --- |
-| `ELOG_ASYNC_MODE_ENABLE` | `1` | `EasyLogger/inc/elog_cfg.h` | Async log output |
+| `ELOG_OUTPUT_LVL` | `ELOG_LVL_VERBOSE` | `EasyLogger/inc/elog_cfg.h` | Max log level |
+| `ELOG_ASYNC_OUTPUT_BUF_SIZE` | `16384` | `EasyLogger/inc/elog_cfg.h` | Async ring buffer size |
 | `ELOG_COLOR_ENABLE` | `1` | `EasyLogger/inc/elog_cfg.h` | ANSI color output |
+
+### UART3
+
+| Macro | Default | File | Purpose |
+| --- | --- | --- | --- |
+| `BSP_UART3_RX_BUF_SIZE` | `512` | `Drivers/BSP/A7683E/bsp_uart3.h` | DMA receive buffer size |
+| `BSP_UART3_RING_BUF_SIZE` | `4096` | `Drivers/BSP/A7683E/bsp_uart3.h` | Ring buffer size |
+| `BSP_UART3_DEBUG` | `0` | `Drivers/BSP/A7683E/bsp_uart3.h` | UART3 hex dump logging |
 
 ## Building
 
@@ -163,7 +184,7 @@ typedef struct bsp_serial {
 
 **Backends:**
 
-- `bsp_uart3` — USART3 DMA with double-buffer + idle-ISR
+- `bsp_uart3` — USART3 DMA with double-buffer + idle-ISR, RX drop counter via `bsp_uart3_get_rx_drop_count()`
 - `bsp_usb` — USB bulk via USBX, event-driven RX (semaphore, no busy-polling)
 - `cmux_serial` — CMUX virtual channels over USART3
 

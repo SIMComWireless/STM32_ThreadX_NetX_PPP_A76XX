@@ -44,15 +44,21 @@ A7683E Modem ←USART3/DMA→ bsp_uart3 (double-buffer, idle-ISR)
 
 ### ThreadX Threads
 
+ThreadX priority: **lower number = higher priority**.
+
 | Thread | Priority | Stack | Purpose |
 |--------|----------|-------|---------|
-| `tx_app_thread` | 10 | 512B | EasyLogger init, UART3 BSP init, LED heartbeat |
-| `Modem Init` | 12 | 1024B | AT command init, PPP dial, nx_ppp_start() |
-| `PPP Read` | 14 | 1024B | Reads UART3 bytes, feeds to nx_ppp_byte_receive() |
-| `NTP Sync` | 16 | 1024B | Waits for PPP link-up, DNS resolve, SNTP sync |
-| `elog async` | 30 | 1024B | Low-priority log output (drains async ring buffer) |
+| `PPP Read` | 5 | 1024B | Reads UART3 bytes, feeds to nx_ppp_byte_receive() |
+| `Modem Init` | 10 | 2048B | AT command init, PPP dial, nx_ppp_start() |
+| `elog async` | 11 | 1024B | Low-priority log output (drains async ring buffer) |
+| `tx_app_thread` | 20 | 512B | EasyLogger init, UART3 BSP init, LED heartbeat |
+| `NTP Sync` | 31 | 3072B | Waits for PPP link-up, DNS resolve, SNTP sync |
+| `TCP iperf TX` | 32 | 3072B | TCP TX throughput test (conditional, `IPERF_ENABLE`) |
+| `UDP iperf TX` | 33 | 3072B | UDP TX throughput test (conditional, `IPERF_ENABLE`) |
 
 Tick rate: 1000 Hz (`TX_TIMER_TICKS_PER_SECOND`).
+
+**Execution order:** PPP link-up → TCP iperf → UDP iperf → NTP sync (iperf skipped when `IPERF_ENABLE=0`).
 
 ### Code Organization
 
@@ -98,7 +104,7 @@ All CubeMX-generated source files use `/* USER CODE BEGIN ... */` / `/* USER COD
 ### NetX PPP + DNS + SNTP
 
 - PPP: `nx_ppp_create()` → `nx_ppp_start()` → link-up callback → DNS/SNTP
-- DNS: `nx_dns_create()` → `nx_dns_host_by_name_get()` to resolve NTP hostname
+- DNS: global `dns_client` (mutex-protected), created on-demand by `resolve_host()`, cleaned up on PPP link-down with try-lock to avoid deadlock
 - SNTP: `nx_sntp_client_create()` → `nx_sntp_client_run_unicast()` → `nx_sntp_client_request_unicast_time()`
 - NTP server: `NTP_SERVER_HOST` macro (default "ntp.aliyun.com", change in app_netxduo.c)
 - NTP epoch: NTP seconds since 1900 → Unix seconds = `ntp_seconds - 2208988800`
@@ -135,7 +141,13 @@ All CubeMX-generated source files use `/* USER CODE BEGIN ... */` / `/* USER COD
 | Macro | Default | Location | Purpose |
 |-------|---------|----------|---------|
 | `A7683E_APN` | "cmnet" | `Drivers/BSP/A7683E/a7683e.h` | Cellular APN |
+| `A7683E_PDP_TYPE` | "IP" | `Drivers/BSP/A7683E/a7683e.h` | PDP context type |
+| `A7683E_TRANSPORT` | `A7683E_TRANSPORT_USB` | `Drivers/BSP/A7683E/a7683e.h` | UART/CMUX/USB transport |
 | `NTP_SERVER_HOST` | "ntp.aliyun.com" | `NetXDuo/App/app_netxduo.c` | NTP server hostname |
-| `ELOG_ASYNC_MODE_ENABLE` | 1 | `EasyLogger/inc/elog_cfg.h` | Async log output |
+| `NTP_TZ_OFFSET_HOURS` | 8 | `NetXDuo/App/app_netxduo.c` | UTC timezone offset (hours) |
+| `IPERF_ENABLE` | 0 | `NetXDuo/App/app_netxduo.c` | Enable iperf threads (0=off) |
+| `BSP_UART3_DEBUG` | 0 | `Drivers/BSP/A7683E/bsp_uart3.h` | UART3 hex dump logging |
+| `ELOG_OUTPUT_LVL` | `ELOG_LVL_VERBOSE` | `EasyLogger/inc/elog_cfg.h` | Max log level |
+| `ELOG_ASYNC_OUTPUT_BUF_SIZE` | 16384 | `EasyLogger/inc/elog_cfg.h` | Async ring buffer size |
 | `ELOG_COLOR_ENABLE` | 1 | `EasyLogger/inc/elog_cfg.h` | ANSI color output |
 | `NX_APP_MEM_POOL_SIZE` | 65536 | `AZURE_RTOS/App/app_azure_rtos_config.h` | NetX memory pool |
