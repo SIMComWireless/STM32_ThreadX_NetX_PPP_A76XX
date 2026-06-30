@@ -62,19 +62,30 @@ int lx_nor_custom_driver_sfdp_init(void)
     if (bsp_spi_flash_read_sfdp(&geo) != 0)
     {
         elog_e(TAG, "SFDP read failed — using W25Q128 defaults");
-        /* Fallback to W25Q128 defaults */
-        nor_block_size     = 4096;
+        /* Fallback to W25Q128 defaults — use 64KB blocks for better throughput */
+        nor_block_size     = 64 * 1024;
         nor_flash_capacity = 16 * 1024 * 1024;
         nor_page_size      = 256;
         nor_total_blocks   = nor_flash_capacity / nor_block_size;
         return -1;
     }
 
-    /* Use sector_size (minimum erase granularity) as LevelX block size */
-    nor_block_size     = geo.sector_size;
+    /* Use 64KB erase blocks for LevelX if available, otherwise fall back to
+     * the smallest erase sector.  Larger blocks dramatically reduce block
+     * reclaim frequency: with 4KB blocks, reclaim fires every 8 sector writes;
+     * with 64KB blocks, every 128 sector writes — 16x less often.
+     * The erase time per block is higher (150ms vs 50ms) but amortized over
+     * 16x more sectors, the net throughput is much better. */
+    if (geo.block_size_64k == 64 * 1024)
+        nor_block_size = 64 * 1024;
+    else if (geo.block_size_32k == 32 * 1024)
+        nor_block_size = 32 * 1024;
+    else
+        nor_block_size = geo.sector_size;
+
     nor_flash_capacity = geo.capacity_bytes;
     nor_page_size      = geo.page_size ? geo.page_size : 256;
-    nor_total_blocks   = geo.sector_count;
+    nor_total_blocks   = nor_flash_capacity / nor_block_size;
 
     elog_i(TAG, "SFDP OK: %luMB, block=%lu, page=%lu, blocks=%lu",
            (unsigned long)(nor_flash_capacity / (1024 * 1024)),
@@ -147,11 +158,20 @@ static UINT lx_nor_driver_block_erase(ULONG block, ULONG erase_count)
 
     LX_PARAMETER_NOT_USED(erase_count);
 
-    LX_LOG_D("Erase blk %lu → 0x%06lX", (unsigned long)block, (unsigned long)byte_addr);
+    LX_LOG_D("Erase blk %lu → 0x%06lX (%luKB)",
+             (unsigned long)block, (unsigned long)byte_addr,
+             (unsigned long)(nor_block_size / 1024));
 
-    if (bsp_spi_flash_erase_sector(byte_addr) != 0)
+    int rc;
+    if (nor_block_size == 64 * 1024)
+        rc = bsp_spi_flash_erase_block64k(byte_addr);
+    else
+        rc = bsp_spi_flash_erase_sector(byte_addr);
+
+    if (rc != 0)
     {
-        elog_e(TAG, "Erase failed: blk=%lu addr=0x%06lX", (unsigned long)block, (unsigned long)byte_addr);
+        elog_e(TAG, "Erase failed: blk=%lu addr=0x%06lX rc=%d",
+               (unsigned long)block, (unsigned long)byte_addr, rc);
         return LX_ERROR;
     }
 
