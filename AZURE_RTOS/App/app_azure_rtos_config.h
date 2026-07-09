@@ -49,7 +49,7 @@ extern "C" {
 #define NX_APP_MEM_POOL_SIZE                     (1024*150)
 
 /* 160KB: 128KB USBX system + 6KB threads + 26KB NetX resources + margin */
-#define UX_HOST_APP_MEM_POOL_SIZE                1024*200
+#define UX_HOST_APP_MEM_POOL_SIZE                1024*100
 
 /* USER CODE BEGIN EC */
 

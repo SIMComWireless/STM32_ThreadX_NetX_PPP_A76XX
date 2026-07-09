@@ -136,7 +136,11 @@ static UINT lx_nor_driver_write(ULONG *flash_address, ULONG *source, ULONG words
     ULONG byte_offset = (ULONG)flash_address - NOR_FLASH_BASE_ADDRESS;
     ULONG byte_len    = words * sizeof(ULONG);
 
-    LX_LOG_D("Write 0x%06lX %lu w", (unsigned long)byte_offset, (unsigned long)words);
+    /* 1 word = mapping table update, 128 words = sector data */
+    LX_LOG_D("Wr 0x%06lX  %3lu w (%4luB)  %s",
+             (unsigned long)byte_offset, (unsigned long)words,
+             (unsigned long)byte_len,
+             (words == 1) ? "MAP" : "DATA");
 
     if (bsp_spi_flash_write(byte_offset, (const uint8_t *)source, byte_len) != 0)
     {
@@ -187,27 +191,32 @@ static UINT lx_nor_driver_block_erased_verify(ULONG block)
     ULONG byte_addr = block * nor_block_size;
 
     LX_LOG_D("Verify blk %lu → 0x%06lX", (unsigned long)block, (unsigned long)byte_addr);
-    ULONG words     = nor_block_size / sizeof(ULONG);
-    ULONG buf[32];  /* Read in small chunks to save stack */
-    ULONG offset;
 
-    for (offset = 0; offset < words; offset += 8)
+    /* Read in 4KB chunks — reduces SPI transactions from 2048 (32B/chunk)
+     * to 16 (4KB/chunk) for a 64KB block.  Stack cost: 4KB temporary buffer.
+     * STM32L4R5 has 640KB SRAM, thread stacks are 1-3KB — 4KB is fine. */
+    static ULONG verify_buf[4096 / sizeof(ULONG)];
+    ULONG remaining = nor_block_size;
+    ULONG offset = 0;
+
+    while (remaining > 0)
     {
-        ULONG chunk = ((words - offset) < 8) ? (words - offset) : 8;
-        ULONG chunk_bytes = chunk * sizeof(ULONG);
+        ULONG chunk = (remaining > 4096) ? 4096 : remaining;
 
-        if (bsp_spi_flash_read(byte_addr + offset * sizeof(ULONG),
-                               (uint8_t *)buf, chunk_bytes) != 0)
-        {
+        if (bsp_spi_flash_read(byte_addr + offset, (uint8_t *)verify_buf, chunk) != 0)
             return LX_ERROR;
-        }
 
-        /* Check all words in chunk are 0xFFFFFFFF */
-        for (ULONG i = 0; i < chunk; i++)
+        /* Check all words are 0xFFFFFFFF — use word comparison (4x faster
+         * than byte comparison on 32-bit ARM) */
+        ULONG words = chunk / sizeof(ULONG);
+        for (ULONG i = 0; i < words; i++)
         {
-            if (buf[i] != 0xFFFFFFFF)
+            if (verify_buf[i] != 0xFFFFFFFF)
                 return LX_ERROR;
         }
+
+        offset    += chunk;
+        remaining -= chunk;
     }
 
     return LX_SUCCESS;

@@ -17,10 +17,11 @@ extern "C" {
 /* ---------- Configuration -------------------------------------------------- */
 
 /** FileX media memory size (sector cache).
- *  Larger cache = fewer flash accesses = faster I/O.
  *  Must be >= sector size (512) and a multiple of sector size.
- *  16KB caches 32 sectors — good balance of RAM usage vs write coalescing. */
-#define FX_MEDIA_MEMORY_SIZE        (512 * 32)  /* 16KB — caches 32 sectors */
+ *  For sequential NOR flash writes, cache hit rate is near zero — each
+ *  sector is written once and flushed.  4KB (8 sectors) is sufficient
+ *  for FAT metadata updates (FAT table + directory entry). */
+#define FX_MEDIA_MEMORY_SIZE        (512 * 8)    /* 4KB — 8 sectors */
 
 /** NOR flash sector size for FileX (must match LevelX sector size) */
 #define FX_NOR_SECTOR_SIZE          512

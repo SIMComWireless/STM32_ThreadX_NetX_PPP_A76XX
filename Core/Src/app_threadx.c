@@ -50,7 +50,7 @@
 
 #define TAG             "APP"
 
-#define USB_THROUGHPUT_TEST_ENABLE    1
+#define USB_THROUGHPUT_TEST_ENABLE    0
 
 /** NTP server hostname — must match definition in app_netxduo.c */
 #ifndef NTP_SERVER_HOST

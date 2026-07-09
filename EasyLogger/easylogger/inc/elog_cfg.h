@@ -71,7 +71,7 @@
 /* buffer size for asynchronous output mode — must be large enough to absorb
  * bursts from multiple threads while the DMA output drains the buffer.
  * At 115200 baud ~13 ms per 150-byte line, 64× gives ~1 second of buffering. */
-#define ELOG_ASYNC_OUTPUT_BUF_SIZE               (ELOG_LINE_BUF_SIZE * 64)
+#define ELOG_ASYNC_OUTPUT_BUF_SIZE               (ELOG_LINE_BUF_SIZE * 16)
 /* each asynchronous output's log which must end with newline sign */
 //#define ELOG_ASYNC_LINE_OUTPUT
 /* NOTE: ELOG_ASYNC_OUTPUT_USING_PTHREAD is NOT defined — we use ThreadX

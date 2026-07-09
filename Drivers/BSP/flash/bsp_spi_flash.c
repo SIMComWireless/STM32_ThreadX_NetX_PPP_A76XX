@@ -1,7 +1,13 @@
 /**
   ******************************************************************************
   * @file    bsp_spi_flash.c
-  * @brief   W25Q128 SPI NOR Flash driver — DMA + RTOS
+  * @brief   W25Q128 SPI NOR Flash driver — blocking + DMA hybrid
+  ******************************************************************************
+  * @note
+  *   Small SPI transfers (commands, addresses, status reads) use blocking
+  *   HAL_SPI_Transmit/Receive — DMA overhead exceeds transfer time.
+  *   Large transfers (page program data, bulk reads) use DMA for throughput.
+  *   All public API functions are thread-safe (flash_sem).
   ******************************************************************************
   */
 
@@ -33,7 +39,7 @@
 
 static TX_SEMAPHORE flash_sem;          /* bus lock (mutual exclusion)         */
 static TX_SEMAPHORE flash_dma_done;     /* DMA completion signal               */
-static uint8_t flash_initialized = 0;
+static volatile uint8_t flash_initialized = 0;
 
 /* ---------- CS control ----------------------------------------------------- */
 
@@ -76,7 +82,11 @@ void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
 /* ---------- Low-level SPI helpers ------------------------------------------ */
 
 /**
- * @brief  Send command then receive data via DMA (BUG FIX #2: loop for >64KB)
+ * @brief  Send command + address, then receive data.
+ *         Header (4 bytes) always uses blocking TX.
+ *         Data RX uses blocking for ≤64 bytes, DMA for larger transfers.
+ *         Threshold rationale: DMA setup + semaphore round-trip ≈ 10µs,
+ *         blocking 64 bytes @ 60MHz ≈ 8.5µs — DMA wins above ~64 bytes.
  */
 static int flash_cmd_read(uint8_t cmd, uint32_t addr, uint8_t *buf, uint32_t len)
 {
@@ -84,27 +94,32 @@ static int flash_cmd_read(uint8_t cmd, uint32_t addr, uint8_t *buf, uint32_t len
 
     cs_low();
 
-    /* Send command + 3-byte address */
+    /* Send command + 3-byte address (blocking — only 4 bytes) */
     hdr[0] = cmd;
     hdr[1] = (addr >> 16) & 0xFF;
     hdr[2] = (addr >> 8)  & 0xFF;
     hdr[3] = addr & 0xFF;
+    if (HAL_SPI_Transmit(&hspi1, hdr, 4, 10) != HAL_OK) { cs_high(); return -1; }
 
-    tx_semaphore_get(&flash_dma_done, TX_NO_WAIT);
-    if (HAL_SPI_Transmit_DMA(&hspi1, hdr, 4) != HAL_OK) { cs_high(); return -1; }
-    if (tx_semaphore_get(&flash_dma_done, 5 * TX_TIMER_TICKS_PER_SECOND) != TX_SUCCESS) { cs_high(); return -2; }
-
-    /* Receive data in chunks (HAL DMA size is uint16_t, max 65535) */
-    while (len > 0)
+    if (len <= 64)
     {
-        uint16_t chunk = (len > 65535) ? 65535 : (uint16_t)len;
-
+        /* Small read — blocking is faster (avoids DMA setup + semaphore) */
+        if (HAL_SPI_Receive(&hspi1, buf, (uint16_t)len, 10) != HAL_OK) { cs_high(); return -2; }
+    }
+    else
+    {
+        /* Large read — DMA for throughput. Flush stale signal once before loop. */
         tx_semaphore_get(&flash_dma_done, TX_NO_WAIT);
-        if (HAL_SPI_Receive_DMA(&hspi1, buf, chunk) != HAL_OK) { cs_high(); return -3; }
-        if (tx_semaphore_get(&flash_dma_done, 5 * TX_TIMER_TICKS_PER_SECOND) != TX_SUCCESS) { cs_high(); return -4; }
+        while (len > 0)
+        {
+            uint16_t chunk = (len > 65535) ? 65535 : (uint16_t)len;
 
-        buf += chunk;
-        len -= chunk;
+            if (HAL_SPI_Receive_DMA(&hspi1, buf, chunk) != HAL_OK) { cs_high(); return -3; }
+            if (tx_semaphore_get(&flash_dma_done, 5 * TX_TIMER_TICKS_PER_SECOND) != TX_SUCCESS) { cs_high(); return -4; }
+
+            buf += chunk;
+            len -= chunk;
+        }
     }
 
     cs_high();
@@ -117,12 +132,11 @@ static int flash_cmd_read(uint8_t cmd, uint32_t addr, uint8_t *buf, uint32_t len
  */
 static int flash_write_enable(void)
 {
+    /* 1-byte command — blocking is faster than DMA here.
+     * DMA setup (~5µs) >> SPI transfer time (0.13µs @ 60MHz). */
     uint8_t cmd = CMD_WRITE_ENABLE;
-
     cs_low();
-    tx_semaphore_get(&flash_dma_done, TX_NO_WAIT);
-    if (HAL_SPI_Transmit_DMA(&hspi1, &cmd, 1) != HAL_OK) { cs_high(); return -1; }
-    if (tx_semaphore_get(&flash_dma_done, TX_TIMER_TICKS_PER_SECOND) != TX_SUCCESS) { cs_high(); return -2; }
+    if (HAL_SPI_Transmit(&hspi1, &cmd, 1, 10) != HAL_OK) { cs_high(); return -1; }
     cs_high();
     return 0;
 }
@@ -206,21 +220,25 @@ int bsp_spi_flash_init(void)
 
 int bsp_spi_flash_read_id(uint8_t id[3])
 {
-    uint8_t cmd = CMD_JEDEC_ID;
+    /* Full-duplex: send 1-byte cmd, receive 3-byte ID in one SPI transaction */
+    uint8_t tx_buf[4] = { CMD_JEDEC_ID, 0xFF, 0xFF, 0xFF };
+    uint8_t rx_buf[4];
 
-    /* BUG FIX #5: use flash_sem for thread safety */
     tx_semaphore_get(&flash_sem, TX_WAIT_FOREVER);
 
     cs_low();
-    tx_semaphore_get(&flash_dma_done, TX_NO_WAIT);
-    if (HAL_SPI_Transmit_DMA(&hspi1, &cmd, 1) != HAL_OK) { cs_high(); tx_semaphore_put(&flash_sem); return -1; }
-    if (tx_semaphore_get(&flash_dma_done, TX_TIMER_TICKS_PER_SECOND) != TX_SUCCESS) { cs_high(); tx_semaphore_put(&flash_sem); return -2; }
-
-    tx_semaphore_get(&flash_dma_done, TX_NO_WAIT);
-    if (HAL_SPI_Receive_DMA(&hspi1, id, 3) != HAL_OK) { cs_high(); tx_semaphore_put(&flash_sem); return -3; }
-    if (tx_semaphore_get(&flash_dma_done, TX_TIMER_TICKS_PER_SECOND) != TX_SUCCESS) { cs_high(); tx_semaphore_put(&flash_sem); return -4; }
-
+    if (HAL_SPI_TransmitReceive(&hspi1, tx_buf, rx_buf, 4, 10) != HAL_OK)
+    {
+        cs_high();
+        tx_semaphore_put(&flash_sem);
+        return -1;
+    }
     cs_high();
+
+    id[0] = rx_buf[1];
+    id[1] = rx_buf[2];
+    id[2] = rx_buf[3];
+
     tx_semaphore_put(&flash_sem);
     return 0;
 }
@@ -300,29 +318,23 @@ int bsp_spi_flash_write(uint32_t addr, const uint8_t *buf, uint32_t len)
 
 int bsp_spi_flash_erase_sector(uint32_t addr)
 {
+    /* 4B TX — blocking, DMA overhead not worth it */
     uint8_t hdr[4];
     int rc = 0;
 
     tx_semaphore_get(&flash_sem, TX_WAIT_FOREVER);
 
-    /* BUG FIX #4: check Write Enable return value */
     rc = flash_write_enable();
     if (rc != 0) goto out;
 
-    /* Sector Erase: cmd + 3-byte addr */
     cs_low();
     hdr[0] = CMD_SECTOR_ERASE_4K;
     hdr[1] = (addr >> 16) & 0xFF;
     hdr[2] = (addr >> 8)  & 0xFF;
     hdr[3] = addr & 0xFF;
-
-    tx_semaphore_get(&flash_dma_done, TX_NO_WAIT);
-    if (HAL_SPI_Transmit_DMA(&hspi1, hdr, 4) != HAL_OK) { cs_high(); rc = -1; goto out; }
-    if (tx_semaphore_get(&flash_dma_done, 5 * TX_TIMER_TICKS_PER_SECOND) != TX_SUCCESS) { cs_high(); rc = -2; goto out; }
-
+    if (HAL_SPI_Transmit(&hspi1, hdr, 4, 10) != HAL_OK) { cs_high(); rc = -1; goto out; }
     cs_high();
 
-    /* Wait for erase to complete (tSE = 50ms typical, 400ms max) */
     rc = bsp_spi_flash_wait_ready(1000);
 
 out:
@@ -332,29 +344,23 @@ out:
 
 int bsp_spi_flash_erase_block64k(uint32_t addr)
 {
+    /* 4B TX — blocking, DMA overhead not worth it */
     uint8_t hdr[4];
     int rc = 0;
 
     tx_semaphore_get(&flash_sem, TX_WAIT_FOREVER);
 
-    /* BUG FIX #4: check Write Enable return value */
     rc = flash_write_enable();
     if (rc != 0) goto out;
 
-    /* 64KB Block Erase */
     cs_low();
     hdr[0] = CMD_BLOCK_ERASE_64K;
     hdr[1] = (addr >> 16) & 0xFF;
     hdr[2] = (addr >> 8)  & 0xFF;
     hdr[3] = addr & 0xFF;
-
-    tx_semaphore_get(&flash_dma_done, TX_NO_WAIT);
-    if (HAL_SPI_Transmit_DMA(&hspi1, hdr, 4) != HAL_OK) { cs_high(); rc = -1; goto out; }
-    if (tx_semaphore_get(&flash_dma_done, 5 * TX_TIMER_TICKS_PER_SECOND) != TX_SUCCESS) { cs_high(); rc = -2; goto out; }
-
+    if (HAL_SPI_Transmit(&hspi1, hdr, 4, 10) != HAL_OK) { cs_high(); rc = -1; goto out; }
     cs_high();
 
-    /* Wait for erase to complete (tBE = 150ms typical, 2s max) */
     rc = bsp_spi_flash_wait_ready(3000);
 
 out:
@@ -364,25 +370,21 @@ out:
 
 int bsp_spi_flash_erase_chip(void)
 {
+    /* 1B TX — blocking */
     int rc = 0;
 
     tx_semaphore_get(&flash_sem, TX_WAIT_FOREVER);
 
-    /* BUG FIX #4: check Write Enable return value */
     rc = flash_write_enable();
     if (rc != 0) goto out;
 
-    /* Chip Erase */
     cs_low();
     {
         uint8_t cmd = CMD_CHIP_ERASE;
-        tx_semaphore_get(&flash_dma_done, TX_NO_WAIT);
-        if (HAL_SPI_Transmit_DMA(&hspi1, &cmd, 1) != HAL_OK) { cs_high(); rc = -1; goto out; }
-        if (tx_semaphore_get(&flash_dma_done, TX_TIMER_TICKS_PER_SECOND) != TX_SUCCESS) { cs_high(); rc = -2; goto out; }
+        if (HAL_SPI_Transmit(&hspi1, &cmd, 1, 10) != HAL_OK) { cs_high(); rc = -1; goto out; }
     }
     cs_high();
 
-    /* Wait for erase to complete (tCE = 25s typical, 100s max) */
     rc = bsp_spi_flash_wait_ready(120000);
 
 out:
@@ -392,30 +394,30 @@ out:
 
 int bsp_spi_flash_wait_ready(uint32_t timeout_ms)
 {
-    /* BUG FIX #3: use tx_time_get() for correct timing */
     ULONG start = tx_time_get();
     ULONG timeout_ticks = timeout_ms * TX_TIMER_TICKS_PER_SECOND / 1000;
     if (timeout_ticks == 0) timeout_ticks = 1;
 
-    while ((tx_time_get() - start) < timeout_ticks)
+    uint8_t tx_buf[2] = { CMD_READ_STATUS_REG1, 0xFF };
+    uint8_t rx_buf[2];
+
+    /* Check immediately — no sleep on entry. Most operations (page program
+     * tPP=0.7ms) finish before we even get here due to WREN + command TX
+     * overhead. Only sleep if the flash is actually busy. */
+    while (1)
     {
-        uint8_t cmd = CMD_READ_STATUS_REG1;
-        uint8_t sr = 0;
-
+        rx_buf[1] = 0xFF;
         cs_low();
-        tx_semaphore_get(&flash_dma_done, TX_NO_WAIT);
-        HAL_SPI_Transmit_DMA(&hspi1, &cmd, 1);
-        tx_semaphore_get(&flash_dma_done, TX_TIMER_TICKS_PER_SECOND);
-
-        tx_semaphore_get(&flash_dma_done, TX_NO_WAIT);
-        HAL_SPI_Receive_DMA(&hspi1, &sr, 1);
-        tx_semaphore_get(&flash_dma_done, TX_TIMER_TICKS_PER_SECOND);
+        HAL_StatusTypeDef rc = HAL_SPI_TransmitReceive(&hspi1, tx_buf, rx_buf, 2, 10);
         cs_high();
 
-        if (!(sr & W25Q128_SR_BUSY))
+        if (rc == HAL_OK && !(rx_buf[1] & W25Q128_SR_BUSY))
             return 0;
 
-        tx_thread_sleep(1);  /* 1ms polling — catches writes completing faster */
+        if ((tx_time_get() - start) >= timeout_ticks)
+            break;
+
+        tx_thread_sleep(1);
     }
 
     elog_e(TAG, "Flash busy timeout (%lums)", (unsigned long)timeout_ms);
@@ -426,37 +428,32 @@ int bsp_spi_flash_wait_ready(uint32_t timeout_ms)
 
 #define CMD_READ_SFDP               0x5A
 
-#define SFDP_SIGNATURE              0x50444653  /* "SFDP" */
-
 /**
  * @brief  Read raw SFDP data from flash
  * @param  addr  Byte address within SFDP space (0-based)
  * @param  buf   Destination buffer
  * @param  len   Number of bytes to read
  * @return 0 on success
+ * @note   Caller must hold flash_sem — this function does not acquire/release it.
  */
 static int sfdp_read(uint32_t addr, uint8_t *buf, uint32_t len)
 {
+    /* Header (5B) uses blocking TX; data RX uses DMA for throughput. */
     uint8_t hdr[5];
 
     if (len == 0) return 0;
 
     cs_low();
 
-    /* Command + 3-byte address + 1 dummy byte — sent as one DMA burst.
-     * Splitting cmd+addr and dummy into two DMA transfers causes
-     * the GD25Q128 to return stale data on subsequent reads. */
+    /* Command + 3-byte address + 1 dummy byte (blocking — only 5 bytes) */
     hdr[0] = CMD_READ_SFDP;
     hdr[1] = (addr >> 16) & 0xFF;
     hdr[2] = (addr >> 8)  & 0xFF;
     hdr[3] = addr & 0xFF;
     hdr[4] = 0xFF;  /* 8 dummy clocks */
+    if (HAL_SPI_Transmit(&hspi1, hdr, 5, 10) != HAL_OK) { cs_high(); return -1; }
 
-    tx_semaphore_get(&flash_dma_done, TX_NO_WAIT);
-    if (HAL_SPI_Transmit_DMA(&hspi1, hdr, 5) != HAL_OK) { cs_high(); return -1; }
-    if (tx_semaphore_get(&flash_dma_done, 5 * TX_TIMER_TICKS_PER_SECOND) != TX_SUCCESS) { cs_high(); return -2; }
-
-    /* Receive SFDP data in chunks */
+    /* Receive SFDP data in DMA chunks */
     while (len > 0)
     {
         uint16_t chunk = (len > 65535) ? 65535 : (uint16_t)len;
@@ -661,6 +658,10 @@ int bsp_spi_flash_read_sfdp(bsp_flash_geometry_t *geo)
                    (unsigned long)(geo->capacity_bytes / (1024 * 1024)),
                    (unsigned long)geo->sector_size,
                    (unsigned long)geo->page_size);
+        }
+        else
+        {
+            elog_e(TAG, "SFDP: JEDEC fallback failed (bad ID)");
         }
         rc = geo->sfdp_valid ? 0 : -7;
         goto out;

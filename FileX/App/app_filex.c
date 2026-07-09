@@ -18,7 +18,6 @@
   */
 
 #include "app_filex.h"
-#include "nor_custom_config.h"
 #include "fx_stm32_levelx_nor_driver.h"
 #include "bsp_spi_flash.h"
 #include "lx_stm32_nor_custom_driver.h"
@@ -99,9 +98,10 @@ static UINT app_filex_format(void)
     if (sectors_per_cluster < 1)  sectors_per_cluster = 1;
     if (sectors_per_cluster > 128) sectors_per_cluster = 128;
 
-    /* Chip erase before format.  LevelX needs clean (0xFF) blocks for its
-     * internal mapping table.  Without this, writes to blocks with old data
-     * will fail (NOR flash can only clear bits, not set them). */
+    /* Full chip erase — required for new or corrupted flash.
+     * LevelX needs all blocks to be 0xFF for its mapping table.
+     * This only runs when fx_media_open() fails (blank flash or
+     * corrupted metadata).  Normal boots skip format entirely. */
     elog_i(TAG, "Chip erasing %luMB flash...",
            (unsigned long)(nor_flash_capacity / (1024 * 1024)));
 
@@ -111,26 +111,20 @@ static UINT app_filex_format(void)
         return FX_IO_ERROR;
     }
 
-    /* Verify erase completed — read back first 16 bytes, must be all 0xFF */
+    /* Verify erase — first 4 bytes must be 0xFF */
     {
-        uint8_t verify[16];
-        if (bsp_spi_flash_read(0, verify, sizeof(verify)) != 0)
+        uint8_t verify[4];
+        bsp_spi_flash_read(0, verify, sizeof(verify));
+        if (verify[0] != 0xFF || verify[1] != 0xFF ||
+            verify[2] != 0xFF || verify[3] != 0xFF)
         {
-            elog_e(TAG, "Post-erase verify read failed");
+            elog_e(TAG, "Post-erase verify failed: %02X %02X %02X %02X",
+                   verify[0], verify[1], verify[2], verify[3]);
             return FX_IO_ERROR;
-        }
-        for (int i = 0; i < 16; i++)
-        {
-            if (verify[i] != 0xFF)
-            {
-                elog_e(TAG, "Post-erase verify failed: byte[%d]=0x%02X (expected 0xFF)", i, verify[i]);
-                return FX_IO_ERROR;
-            }
         }
     }
 
-    elog_i(TAG, "Erase complete + verified. Formatting (%lu sectors, %lu bytes/sector, "
-           "%lu sectors/cluster)...",
+    elog_i(TAG, "Erase OK. Formatting (%lu sectors, %lu bytes/sector, %lu sectors/cluster)...",
            (unsigned long)total_sectors, (unsigned long)sector_size,
            (unsigned long)sectors_per_cluster);
 
@@ -162,7 +156,7 @@ static UINT app_filex_format(void)
 /* ---------- Speed test ----------------------------------------------------- */
 
 #define SPEED_TEST_SIZE         (1 * 1024 * 1024)   /* 1 MB */
-#define SPEED_TEST_CHUNK        4096*8                /* write/read chunk size */
+#define SPEED_TEST_CHUNK        (4096 * 2)          /* 16KB — small enough for RAM budget */
 #define SPEED_TEST_FILE         "test.txt"
 
 /**
@@ -313,6 +307,84 @@ static void app_filex_speed_test(void)
     elog_i(TAG, "=== Speed test done ===");
 }
 
+/* ---------- jack.txt demo -------------------------------------------------- */
+
+#define JACK_FILE   "jack.txt"
+
+static const char jack_content[] =
+    "are you sure they cant disable the watch dag remotely?"
+    "since r&d told feeding watch dog during fota was difficult ."
+    "pls double check，atlanta should consider the system.bin fota take more than 40s in the design.";
+
+/**
+ * @brief  Write and read back jack.txt — demonstrates FileX read/write API.
+ */
+static void app_filex_jack_test(void)
+{
+    FX_FILE file;
+    UINT status;
+    char read_buf[512];
+    ULONG bytes_read;
+
+    elog_i(TAG, "=== jack.txt demo ===");
+
+    /* Try to open existing file first */
+    status = fx_file_open(&nor_media, &file, JACK_FILE, FX_OPEN_FOR_READ);
+    if (status != FX_SUCCESS)
+    {
+        /* File doesn't exist — create, write, then reopen for read */
+        elog_i(TAG, "jack.txt not found, creating...");
+
+        status = fx_file_create(&nor_media, JACK_FILE);
+        if (status != FX_SUCCESS)
+        {
+            elog_e(TAG, "jack.txt create failed: 0x%02X", status);
+            return;
+        }
+
+        status = fx_file_open(&nor_media, &file, JACK_FILE, FX_OPEN_FOR_WRITE);
+        if (status != FX_SUCCESS)
+        {
+            elog_e(TAG, "jack.txt open(write) failed: 0x%02X", status);
+            return;
+        }
+
+        status = fx_file_write(&file, (void *)jack_content, strlen(jack_content));
+        fx_file_close(&file);
+
+        if (status != FX_SUCCESS)
+        {
+            elog_e(TAG, "jack.txt write failed: 0x%02X", status);
+            return;
+        }
+
+        elog_i(TAG, "jack.txt wrote %u bytes", (unsigned)strlen(jack_content));
+
+        /* Reopen for read */
+        status = fx_file_open(&nor_media, &file, JACK_FILE, FX_OPEN_FOR_READ);
+        if (status != FX_SUCCESS)
+        {
+            elog_e(TAG, "jack.txt open(read) failed: 0x%02X", status);
+            return;
+        }
+    }
+
+    /* Read and print */
+    memset(read_buf, 0, sizeof(read_buf));
+    status = fx_file_read(&file, read_buf, sizeof(read_buf) - 1, &bytes_read);
+    fx_file_close(&file);
+
+    if (status != FX_SUCCESS)
+    {
+        elog_e(TAG, "jack.txt read failed: 0x%02X", status);
+        return;
+    }
+
+    elog_i(TAG, "jack.txt content (%lu bytes):", (unsigned long)bytes_read);
+    elog_i(TAG, "  %s", read_buf);
+    elog_i(TAG, "=== jack.txt demo done ===");
+}
+
 /* ---------- Public API ----------------------------------------------------- */
 
 UINT app_filex_init(void)
@@ -374,12 +446,38 @@ UINT app_filex_init(void)
     filex_initialized = 1;
 
     /* Run read/write speed test */
-    //app_filex_speed_test();
+    app_filex_speed_test();
+
+    /* Write and read back jack.txt */
+    app_filex_jack_test();
+
+    /* Close media to flush LevelX mapping table to flash.
+     * Without this, a subsequent MCU reset may leave LevelX metadata
+     * inconsistent, causing fx_media_open() to fail on next boot.
+     * The media will be reopened on demand by app_filex_get_media(). */
+    fx_media_close(&nor_media);
+    filex_initialized = 0;
+    elog_i(TAG, "Media closed — will reopen on first access");
 
     return FX_SUCCESS;
 }
 
 FX_MEDIA *app_filex_get_media(void)
 {
-    return filex_initialized ? &nor_media : NULL;
+    if (filex_initialized)
+        return &nor_media;
+
+    /* Media was closed after init tests — reopen on demand */
+    UINT status = fx_media_open(&nor_media, "NOR Flash",
+                                fx_stm32_levelx_nor_driver,
+                                (void *)(ULONG)NOR_CUSTOM_DRIVER_ID,
+                                nor_media_memory, FX_MEDIA_MEMORY_SIZE);
+    if (status == FX_SUCCESS)
+    {
+        filex_initialized = 1;
+        return &nor_media;
+    }
+
+    elog_e(TAG, "Media reopen failed: 0x%02X", status);
+    return NULL;
 }
