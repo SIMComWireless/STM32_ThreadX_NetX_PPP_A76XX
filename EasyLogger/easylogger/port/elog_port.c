@@ -131,18 +131,14 @@ void elog_port_output_unlock(void) {
 /**
  * get current time interface
  *
- * @return current time in HH:MM:SS format from RTC
+ * @return current time in HH:MM:SS format from RTC cache (updated by IRQ)
  */
 const char *elog_port_get_time(void) {
     static char cur_system_time[16] = "";
-    RTC_TimeTypeDef sTime;
-    RTC_DateTypeDef sDate;
-
-    HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
-    HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);  /* must read date to unlock shadow reg */
+    volatile rtc_cached_time_t *t = &rtc_time_cache;
 
     snprintf(cur_system_time, sizeof(cur_system_time), "%02u:%02u:%02u",
-             sTime.Hours, sTime.Minutes, sTime.Seconds);
+             t->hours, t->minutes, t->seconds);
     return cur_system_time;
 }
 

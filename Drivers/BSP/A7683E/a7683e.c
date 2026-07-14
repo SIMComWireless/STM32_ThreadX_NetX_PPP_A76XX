@@ -42,6 +42,18 @@ static bsp_serial_t *modem_serial = NULL;
 
 static char resp_buf[A7683E_RESP_BUF_SIZE];
 
+/** IMEI read from modem via AT+GSN during init */
+static char modem_imei[16] = {0};
+
+/**
+ * @brief  Get the modem IMEI read during a7683e_init().
+ * @return Pointer to 15-digit IMEI string, or empty string if not available.
+ */
+const char *a7683e_get_imei(void)
+{
+    return modem_imei;
+}
+
 /* ---------- Private helpers ---------------------------------------------- */
 
 static void flush_rx(void)
@@ -400,6 +412,36 @@ UINT a7683e_init(void)
     /* Step 2: Disable echo */
     elog_d(TAG, "[2/7] Disabling echo...");
     a7683e_send_at("ATE0", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+
+    /* Step 2b: Read IMEI (AT+GSN) — must be in AT command mode */
+    {
+        char imei_buf[A7683E_RESP_BUF_SIZE];
+        if (a7683e_send_at("AT+GSN", imei_buf, sizeof(imei_buf), 2000) == A7683E_OK) {
+            /* Response: "AT+GSN\r\r\n<IMEI>\r\n\r\nOK\r\n"
+             * Skip echo line, find first digit sequence */
+            const char *p = imei_buf;
+            while (*p) {
+                while (*p && *p != '\n') p++;
+                if (*p == '\n') p++;
+                if (*p >= '0' && *p <= '9') {
+                    size_t pos = 0;
+                    while (p[pos] >= '0' && p[pos] <= '9' && pos < sizeof(modem_imei) - 1) {
+                        modem_imei[pos] = p[pos];
+                        pos++;
+                    }
+                    modem_imei[pos] = '\0';
+                    break;
+                }
+            }
+            if (strlen(modem_imei) == 15) {
+                elog_i(TAG, "IMEI: %s", modem_imei);
+            } else {
+                elog_w(TAG, "IMEI parse failed (got %d digits)", (int)strlen(modem_imei));
+            }
+        } else {
+            elog_w(TAG, "AT+GSN failed — IMEI not available");
+        }
+    }
 
     /* Step 3: Check SIM status */
     elog_d(TAG, "[3/7] Checking SIM card...");

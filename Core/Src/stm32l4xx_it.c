@@ -20,6 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32l4xx_it.h"
+#include "rtc.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 extern HCD_HandleTypeDef               hhcd_USB_OTG_FS;
@@ -340,5 +341,36 @@ void OTG_FS_IRQHandler(void)
 
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief  RTC Wakeup interrupt handler — fires every second
+  *         Updates cached time for fast elog timestamp reads
+  */
+void RTC_WKUP_IRQHandler(void)
+{
+    if (__HAL_RTC_WAKEUPTIMER_GET_IT(&hrtc, RTC_IT_WUT)) {
+        __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
+
+        RTC_TimeTypeDef sTime = {0};
+        RTC_DateTypeDef sDate = {0};
+        HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+        HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+
+        /* Build into a local then copy — avoids torn read where elog sees
+         * new hours with old minutes/seconds mid-update. */
+        rtc_cached_time_t tmp = {
+            .hours   = sTime.Hours,
+            .minutes = sTime.Minutes,
+            .seconds = sTime.Seconds,
+            .date    = sDate.Date,
+            .month   = sDate.Month,
+            .year    = sDate.Year,
+        };
+        rtc_time_cache = tmp;
+    }
+
+    /* Clear EXTI line 19 pending flag */
+    __HAL_RTC_WAKEUPTIMER_EXTI_CLEAR_FLAG();
+}
 
 /* USER CODE END 1 */

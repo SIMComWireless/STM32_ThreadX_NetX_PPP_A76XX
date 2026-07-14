@@ -22,6 +22,9 @@
 
 /* USER CODE BEGIN 0 */
 
+/* Cached RTC time — updated by RTC second interrupt */
+volatile rtc_cached_time_t rtc_time_cache = {0, 0, 0, 0, 0, 0};
+
 /* USER CODE END 0 */
 
 RTC_HandleTypeDef hrtc;
@@ -53,6 +56,29 @@ void MX_RTC_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN RTC_Init 2 */
+
+  /* Enable RTC Wakeup Timer interrupt — fires every second to update cached
+   * time for elog timestamps.  CK_SPRE = 1 Hz, counter 0 → period = 1 s. */
+  HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0, RTC_WAKEUPCLOCK_CK_SPRE_16BITS);
+
+  /* HAL_RTCEx_SetWakeUpTimer_IT configures RTC_CR and EXTI but does NOT
+   * enable the NVIC interrupt — must be done explicitly. */
+  HAL_NVIC_SetPriority(RTC_WKUP_IRQn, 15, 0);
+  HAL_NVIC_EnableIRQ(RTC_WKUP_IRQn);
+
+  /* Read initial time into cache */
+  {
+      RTC_TimeTypeDef sTime = {0};
+      RTC_DateTypeDef sDate = {0};
+      HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+      HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+      rtc_time_cache.hours   = sTime.Hours;
+      rtc_time_cache.minutes = sTime.Minutes;
+      rtc_time_cache.seconds = sTime.Seconds;
+      rtc_time_cache.date    = sDate.Date;
+      rtc_time_cache.month   = sDate.Month;
+      rtc_time_cache.year    = sDate.Year;
+  }
 
   /* USER CODE END RTC_Init 2 */
 

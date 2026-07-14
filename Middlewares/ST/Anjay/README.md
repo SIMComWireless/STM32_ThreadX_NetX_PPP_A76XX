@@ -1,0 +1,342 @@
+# Anjay LwM2M library [<img align="right" height="50px" src="https://docs.avsystem.com/hubfs/Anjay_Docs/_images/avsystem_logo.png">](http://www.avsystem.com/)
+
+[![Build Status](https://github.com/AVSystem/Anjay/actions/workflows/anjay-tests.yml/badge.svg?branch=master)](https://github.com/AVSystem/Anjay/actions)
+[![Coverity Status](https://scan.coverity.com/projects/13206/badge.svg)](https://scan.coverity.com/projects/avsystem-anjay)
+
+
+## Licensing Notice (from v3.10.0)
+
+Starting from **version 3.10.0**, the **Anjay LwM2M Client SDK** is distributed
+under a new **License**.
+
+### Mandatory Registration for Commercial Use
+
+If you intend to use Anjay in any **commercial context**, **you must fill in a registration form**
+to obtain a **free commercial license** for your product.
+
+**Register here**: [https://go.avsystem.com/anjay-registration](https://go.avsystem.com/anjay-registration)
+
+### Why is registration required?
+
+We introduced registration to:
+
+- **Gain insight into usage patterns** – so we can prioritize support, features,
+  and enhancements relevant to real-world use cases.
+- **Engage with users** – allow us to notify you about important updates,
+  security advisories, or licensing changes.
+- **Offer tailored commercial plugins, professional services, and technical support**
+  to accelerate your product development.
+
+For inquiries, please contact: [sales@avsystem.com](mailto:sales@avsystem.com)
+
+## What is Anjay?
+
+Anjay is a C library that aims to be the reference implementation of the OMA Lightweight Machine-to-Machine (LwM2M) device management protocol. It eases development of fully-featured LwM2M client applications by taking care of protocol details, allowing the user to focus on device-specific aspects.
+
+The project has been created and is actively maintained by [AVSystem](https://www.avsystem.com).
+
+Quick links:
+- [Full documentation](https://docs.avsystem.com/hubfs/Anjay_Docs/index.html)
+- [Tutorials](https://docs.avsystem.com/hubfs/Anjay_Docs/BasicClient.html)
+- [API docs](https://docs.avsystem.com/hubfs/Anjay_Docs/api/index.html)
+- [Changelog](CHANGELOG.md)
+
+Table of contents:
+<!-- toc -->
+
+* [Supported features](#supported-features)
+* [About OMA LwM2M](#about-oma-lwm2m)
+* [Embedded operating systems ports](#embedded-operating-systems-ports)
+* [Quickstart guide](#quickstart-guide)
+  * [Dependencies](#dependencies)
+    * [Ubuntu 20.04 LTS / Raspbian Buster or later](#ubuntu-2004-lts--raspbian-buster-or-later)
+    * [CentOS 7 or later](#centos-7-or-later)
+    * [macOS Sierra or later, with Homebrew](#macos-sierra-or-later-with-homebrew)
+  * [Running the demo client](#running-the-demo-client)
+  * [Detailed compilation guide](#detailed-compilation-guide)
+    * [Building using CMake](#building-using-cmake)
+  * [Raspberry Pi client](#raspberry-pi-client)
+  * [Use a Dockerfile](#use-a-dockerfile)
+* [License](#license)
+  * [Commercial support](#commercial-support)
+* [Feedback](#feedback)
+* [Contributing](#contributing)
+
+<!-- /toc -->
+
+## Supported features
+
+This version includes full support for OMA LwM2M TS 1.1 and most of LwM2M 1.2 features.
+Some features, such as support for EST, SMS binding or HSM's are [available commercially](#commercial-support).
+
+- LwM2M Bootstrap Interface:
+    - Request
+    - Discover
+    - Read
+    - Write
+    - Delete
+    - Finish
+
+- LwM2M Client Registration Interface:
+    - Register
+    - Update
+    - De-register
+
+- LwM2M Device Management and Service Enablement Interface:
+    - Discover
+    - Read
+    - Read-Composite
+    - Write
+    - Write-Composite
+    - Execute
+    - Write-Attributes
+    - Create
+    - Delete
+    - Send
+
+- LwM2M Information Reporting Interface:
+    - Observe
+    - Observe-Composite
+    - Cancel Observation
+    - Cancel Observation-Composite
+    - Notify
+
+- LwM2M Security modes:
+    - DTLS with Certificates (if supported by backend TLS library)
+    - DTLS with PSK (if supported by backend TLS library)
+    - NoSec mode
+
+- Supported TLS backends:
+    - mbed TLS
+    - OpenSSL
+
+- Supported platforms:
+    - any Unix-like operating system, such as Linux (including Android), macOS and BSD family
+    - Microsoft Windows (preliminary support, see [README.Windows.md](README.Windows.md) for details)
+    - any embedded platform (e.g. FreeRTOS, Zephyr) - check the list of [ready to use integrations](#embedded-operating-systems-ports)
+    - porting is possible for any other platform that has ISO C99 compiler available, see [Porting guide for non-POSIX platforms](https://docs.avsystem.com/hubfs/Anjay_Docs/PortingGuideForNonPOSIXPlatforms.html) for details
+
+- CoAP data formats:
+    - Plain Text
+    - Opaque
+    - CBOR
+    - TLV
+    - SenML JSON
+    - SenML CBOR
+    - LwM2M JSON (output only)
+
+- CoAP BLOCK transfers (for transferring data that does not fit in a single UDP packet):
+    - Block1 (sending / receiving requests)
+    - Block2 (sending responses)
+
+- Pre-implemented LwM2M Objects:
+    - Access Control
+    - Security
+    - Server
+    - Firmware Update
+    - IPSO single and three-axis sensor objects
+    - LwM2M Gateway
+
+- Stream-oriented persistence API
+
+- [LwM2M Gateway functionality](https://www.openmobilealliance.org/release/LwM2M_Gateway/V1_1_1-20240312-A/OMA-TS-LWM2M_Gateway-V1_1_1-20240312-A.pdf)
+
+## About OMA LwM2M
+
+OMA LwM2M is a remote device management and telemetry protocol designed to conserve network resources. It is especially suitable for constrained wireless devices, where network communication is a major factor affecting battery life. LwM2M features secure (DTLS-encrypted) methods of remote bootstrapping, configuration and notifications over UDP or SMS.
+
+For quick and simple protocol learning, visit [LwM2M Crash Course](https://avsystem.com/crashcourse/lwm2m/)
+
+More details about OMA LwM2M: [Brief introduction to LwM2M](https://docs.avsystem.com/hubfs/Anjay_Docs/LwM2M.html)
+
+## Embedded operating systems ports
+
+If you want to use Anjay on Zephyr OS, FreeRTOS, Azure RTOS, or RPI Pico W check our demo
+applications available in other repositories:
+- [Anjay-zephyr-demo](https://github.com/AVSystem/Anjay-zephyr-demo) (uses [Anjay-zephyr-module](https://github.com/AVSystem/Anjay-zephyr-module) integration layer)
+- [Anjay-freertos-client](https://github.com/AVSystem/Anjay-freertos-client)
+- [Anjay-pico-client](https://github.com/AVSystem/Anjay-pico-client) (uses FreeRTOS Kernel)
+
+There are also archived, not actively maintained Anjay demos and integrations:
+- [Anjay-esp32-client](https://github.com/AVSystem/Anjay-esp32-client) (uses [Anjay-esp-idf](https://github.com/AVSystem/Anjay-esp-idf) integration layer)
+- [Anjay-mbedos-client](https://github.com/AVSystem/Anjay-mbedos-client) (uses [Anjay-mbedos](https://github.com/AVSystem/Anjay-mbedos) integration layer)
+- [Anjay-stm32-azurertos-client](https://github.com/AVSystem/Anjay-stm32-azurertos-client)
+
+## Quickstart guide
+
+### Dependencies
+
+-   C compiler with C99 support,
+-   [avs\_commons](https://github.com/AVSystem/avs_commons/) - included in the repository as a subproject,
+-   If DTLS support is enabled, at least one of:
+    -   [OpenSSL 1.1+](https://www.openssl.org/),
+    -   [mbed TLS 2.0+](https://www.trustedfirmware.org/projects/mbed-tls/),
+-   Optional dependencies (required for tests):
+    -   [CMake 3.22+](https://cmake.org/) - non-mandatory, but preferred build system,
+    -   C++ compiler with C++11 support,
+    -   [Python 3.5+](https://www.python.org/),
+    -   [pybind11](https://github.com/pybind/pybind11) - included in the repository as a subproject,
+    -   [scan-build](https://clang-analyzer.llvm.org/scan-build.html) - for static analysis,
+-   Optional dependencies (required for building documentation - more information in "Contributing" section):
+    -   [Doxygen](http://www.doxygen.nl/),
+    -   [Sphinx](https://www.sphinx-doc.org/en/master/).
+
+#### Ubuntu 20.04 LTS / Raspbian Buster or later
+
+<!-- deps_install_begin -->
+``` sh
+sudo apt-get install git build-essential cmake libmbedtls-dev zlib1g-dev
+```
+<!-- deps_install_end -->
+
+#### CentOS 7 or later
+
+``` sh
+# EPEL is required for mbedtls-devel and cmake3
+sudo yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+sudo yum install -y which git make cmake3 mbedtls-devel gcc gcc-c++ zlib-devel
+```
+
+#### macOS Sierra or later, with [Homebrew](https://brew.sh/)
+
+``` sh
+brew install cmake mbedtls openssl
+```
+
+### Running the demo client
+
+For initial development and testing of LwM2M clients, we recommend using the [Coiote IoT Device Management](https://avsystem.com/coiote-iot-device-management-platform/) where you can use the basic LwM2M server functionality for free.
+After registering and logging in Coiote, you can [onboard your first device](https://eu.iot.avsystem.cloud/doc/user/getting-started/onboard-your-first-device/).
+
+With a device added to the LwM2M Server, you can compile Anjay demo client and connect it to the platform by running:
+
+<!-- compile_instruction_begin -->
+``` sh
+git clone https://github.com/AVSystem/Anjay.git \
+    && cd Anjay \
+    && git submodule update --init \
+    && cmake . \
+    && make -j \
+    && ./output/bin/demo --endpoint-name $(hostname) --server-uri coap://eu.iot.avsystem.cloud:5683
+```
+<!-- compile_instruction_end -->
+
+**NOTE**: When CMake configuration is done without Python Virtual Environment activated, client Firmware Update package won't be build. To enable building of firmware package, please follow [Python Virtual Environments](#python-virtual-environments) first.
+
+**NOTE**: On some older systems like CentOS 7, you may need to use `cmake3` instead of `cmake`.
+
+**NOTE**: We strongly recommend replacing `$(hostname)` with some actual unique hostname. Please see the [documentation](https://docs.avsystem.com/hubfs/Anjay_Docs/LwM2M.html#clients-and-servers) for information on preferred endpoint name formats. Note that with the Coiote IoT Device Management platform, you will need to enter the endpoint name into the server UI first.
+
+### Detailed compilation guide
+
+For a detailed guide on configuring and compiling the project (including cross-compiling), see [Compiling client applications](https://docs.avsystem.com/hubfs/Anjay_Docs/Compiling_client_applications.html).
+
+First, make sure all necessary submodules are downloaded and up-to-date:
+
+``` sh
+git submodule update --init
+```
+
+After that, you have several options to compile the library.
+
+#### Building using CMake
+
+The preferred way of building Anjay is to use CMake.
+
+By default demo client compiles with DTLS enabled and uses `mbedtls` as a DTLS provider,
+but you may choose other DTLS backends currently supported by setting `DTLS_BACKEND` in
+a CMake invocation to one of the following DTLS backends: `openssl` or `mbedtls`:
+
+``` sh
+cmake . -DDTLS_BACKEND="mbedtls" && make -j
+```
+
+Or, if a lack of security (not recommended) is what you need for some reason:
+
+```sh
+cmake . -DDTLS_BACKEND="" && make -j
+```
+
+Compiled executables, including demo client, can be found in output/bin subdirectory.
+
+To start the demo client:
+
+``` sh
+# uses plain CoAP
+./output/bin/demo --endpoint-name $(hostname) --server-uri coap://eu.iot.avsystem.cloud:5683
+
+# uses DTLS in PSK mode
+./output/bin/demo --endpoint-name $(hostname) --server-uri coaps://eu.iot.avsystem.cloud:5684 --security-mode psk --identity-as-string your_psk_identity --key-as-string your_psk_key
+```
+
+**NOTE**: When establishing a DTLS connection, the URI MUST use "coaps://". In NoSec mode (default), the URI MUST use "<coap://>".
+
+### Raspberry Pi client
+
+LwM2M Client for Raspberry Pi, with a feature allowing for implementing LwM2M Objects in Python, is available in [Svetovid-raspberry-client repository](https://github.com/AVSystem/Svetovid-raspberry-client).
+
+### Use a Dockerfile
+
+For some cases you may find it comfortable to use Docker image. In this case, the only dependency is Docker, which you can install with your favorite package manager.
+If Docker is already installed, you can clone the repo and build the Docker image:
+
+```
+git clone --recurse-submodules https://github.com/AVSystem/Anjay.git
+cd Anjay
+docker build --no-cache --tag anjay .
+```
+
+Then, you can launch the built image and run the demo client:
+
+```
+docker run -it anjay
+./output/bin/demo -e $(hostname) -u coap://eu.iot.avsystem.cloud:5683
+```
+
+## License
+
+See [LICENSE](LICENSE) file.
+
+### Commercial support
+
+Anjay LwM2M library comes with the option of [full commercial support, provided by AVSystem](https://avsystem.com/anjay-iot-sdk/).
+
+The list of features available commercially is [available here](https://docs.avsystem.com/hubfs/Anjay_Docs/CommercialFeatures.html).
+
+If you're interested in LwM2M Server, be sure to check out the [Coiote IoT Device Management](https://www.avsystem.com/products/coiote-iot-dm/) platform by AVSystem. It also includes the [interoperability test module](https://avsystem.com/coiote-iot-device-management-platform/lwm2m-interoperability-test/) that you can use to test your LwM2M client implementation. Our automated tests and testing scenarios enable you to quickly check how interoperable your device is with LwM2M.
+
+## Feedback
+
+Got a minute? Help improve **Anjay IoT SDK - [fill out this short form](https://docs.google.com/forms/d/e/1FAIpQLSegs_HTDEM-J3w0VeEvVdVTsjiB41YKxj_4w9dud0GQsUIQiA/viewform)**.
+
+## Contributing
+
+Contributions are welcome! See our [contributing guide](CONTRIBUTING.rst).
+
+# Building documentation
+
+Building documentation requires several Python packages listed in `requirements.txt`. Recommended way is to use
+Python Virtual Environment, please follow [Python Virtual Environments](#python-virtual-environments) first.
+
+```
+cmake . && make doc
+```
+
+the documentation will be available under `output/doc/sphinx/html`. Doxygen documentation is also converted
+into spihnx format.
+
+# Python Virtual Environments
+Anjay utils consists of multiple Python scripts. To be compliant with PEP868 we enforce usage of Virtual Environments. To configure one in anjay directory follow this steps:
+
+```sh
+python3 -m venv venv
+source venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+or simply run
+
+```sh
+./devconfig
+```

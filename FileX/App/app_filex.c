@@ -445,6 +445,7 @@ UINT app_filex_init(void)
     elog_i(TAG, "FileX init complete — media ready");
     filex_initialized = 1;
 
+    #if 0
     /* Run read/write speed test */
     app_filex_speed_test();
 
@@ -458,6 +459,8 @@ UINT app_filex_init(void)
     fx_media_close(&nor_media);
     filex_initialized = 0;
     elog_i(TAG, "Media closed — will reopen on first access");
+
+    #endif
 
     return FX_SUCCESS;
 }

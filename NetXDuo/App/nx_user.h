@@ -2337,6 +2337,12 @@
 
 /* USER CODE BEGIN 2 */
 
+/* Enable BSD Socket compatibility layer for Anjay */
+#define NX_BSD_ENABLE
+#define NX_BSD_THREAD_ERRNO_ENABLE
+#define NX_BSD_TIMEOUT_PROCESS_IN_TIMER
+#define NX_BSD_ENABLE_DNS
+
 /* USER CODE END 2 */
 
 #endif /* NX_USER_H */

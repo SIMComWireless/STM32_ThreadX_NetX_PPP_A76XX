@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+#
+# Copyright 2017-2026 AVSystem <avsystem@avsystem.com>
+# AVSystem Anjay LwM2M SDK
+# All rights reserved.
+#
+# Licensed under AVSystem Anjay LwM2M Client SDK - Non-Commercial License.
+# See the attached LICENSE file for details.
+
+. "$(dirname "$0")/tools/utils.sh"
+
+SCRIPT_DIR="$(dirname "$(canonicalize "$0")")"
+rm -rf avs_commons/install
+rm -rf deps/avs_commons/CMakeFiles
+rm -f deps/avs_commons/CMakeCache.txt
+
+ANJAY_VERSION="unknown"
+
+if [[ -d '.git' ]]; then
+    echo "Updating submodules" && git submodule update --init --recursive || exit 1
+    ANJAY_VERSION=$(git rev-parse --short HEAD)
+fi
+
+C_FLAGS='-g -std=c99 -Werror=implicit-function-declaration'
+
+EXTRA_C_FLAGS=
+EXTRA_FLAGS=()
+
+MODULE_DYNAMIC_LIBS='ON'
+MODULE_STATIC_LIBS='ON'
+DTLS_BACKEND="mbedtls"
+WITH_EXAMPLES='ON'
+WITH_AVS_CRYPTO_PKI_ENGINE_EXPLICIT='OFF'
+
+if valgrind --version >/dev/null 2>/dev/null; then
+    WITH_VALGRIND=ON
+    WITH_ASAN=OFF
+else
+    WITH_VALGRIND=OFF
+    WITH_ASAN=ON
+fi
+
+if ! which afl-gcc &>/dev/null; then
+    if [[ -d "$HOME/tools/afl/latest" ]]; then
+        AFL_FUZZER_DIR="$HOME/tools/afl/latest"
+    fi
+fi
+
+# in case both CMake 2 and 3 is available, prefer newer
+CMAKE_COMMAND=cmake
+which cmake3 &>/dev/null && CMAKE_COMMAND=cmake3
+
+# Ask a tiny standalone CMake project which concrete crypto-engine backend is
+# available for the current flags. It writes one word to backend.txt:
+# "pkcs11", "psa" or "none".
+probe_crypto_engine_backend() {
+    local probe_dir
+    local backend
+
+    probe_dir="$(mktemp -d)"
+    if ! "${CMAKE_COMMAND}" \
+            -S "${SCRIPT_DIR}/cmake/probe_crypto_engine_backend" \
+            -B "$probe_dir" \
+            -DDTLS_BACKEND="${DTLS_BACKEND}" \
+            "${EXTRA_FLAGS[@]}" >/dev/null 2>&1; then
+        rm -rf "$probe_dir"
+        echo "none"
+        return 0
+    fi
+
+    backend="$(cat "$probe_dir/backend.txt" 2>/dev/null || echo none)"
+    rm -rf "$probe_dir"
+    echo "${backend:-none}"
+}
+
+# argument parsing
+while [ $# -gt 0 ]; do
+    case "$1" in
+        '--c-flags')
+            shift
+            C_FLAGS="$1"
+            ;;
+        '--fuzz-tests')
+            EXTRA_FLAGS[${#EXTRA_FLAGS[@]}]="-DCMAKE_TOOLCHAIN_FILE=$SCRIPT_DIR/cmake/toolchain/afl-gcc.cmake"
+            EXTRA_FLAGS[${#EXTRA_FLAGS[@]}]="-DWITH_FUZZ_TESTS=ON"
+            [[ "$AFL_FUZZER_DIR" ]] && EXTRA_FLAGS[${#EXTRA_FLAGS[@]}]="-DAFL_FUZZER_DIR=$AFL_FUZZER_DIR"
+            ;;
+        '--with-mbedtls')
+            DTLS_BACKEND="mbedtls"
+            ;;
+        '--with-openssl')
+            DTLS_BACKEND="openssl"
+            ;;
+        '--without-dtls')
+            DTLS_BACKEND=
+            ;;
+        '--with-valgrind')
+            WITH_ASAN=OFF
+            WITH_VALGRIND=ON
+            ;;
+        '--with-asan')
+            WITH_VALGRIND=OFF
+            WITH_ASAN=ON
+            ;;
+        '--without-memcheck')
+            WITH_ASAN=OFF
+            WITH_VALGRIND=OFF
+            ;;
+        '--without-analysis')
+            EXTRA_FLAGS=(-D WITH_STATIC_ANALYSIS=OFF "${EXTRA_FLAGS[@]}")
+            ;;
+        '--no-examples')
+            WITH_EXAMPLES=OFF
+            ;;
+        '--tiny')
+            EXTRA_FLAGS[${#EXTRA_FLAGS[@]}]="-DMAX_PK_OR_IDENTITY_SIZE=256"
+            EXTRA_FLAGS[${#EXTRA_FLAGS[@]}]="-DMAX_SECRET_KEY_SIZE=128"
+            EXTRA_FLAGS[${#EXTRA_FLAGS[@]}]="-DMAX_DOUBLE_STRING_SIZE=64"
+            EXTRA_FLAGS[${#EXTRA_FLAGS[@]}]="-DMAX_URI_SEGMENT_SIZE=64"
+            EXTRA_FLAGS[${#EXTRA_FLAGS[@]}]="-DMAX_URI_QUERY_SEGMENT_SIZE=64"
+            EXTRA_FLAGS[${#EXTRA_FLAGS[@]}]="-DMAX_HOLDOFF_TIME=20"
+            ;;
+        -DDTLS_BACKEND=*)
+            DTLS_BACKEND="${1#-DDTLS_BACKEND=}"
+            ;;
+        -D)
+            if [[ $# -gt 1 && $2 =~ ^DTLS_BACKEND= ]]; then
+                DTLS_BACKEND="${2#DTLS_BACKEND=}"
+                shift
+            else
+                EXTRA_FLAGS[${#EXTRA_FLAGS[@]}]="$1"
+            fi
+            ;;
+        -DWITH_AVS_CRYPTO_PKI_ENGINE=*)
+            WITH_AVS_CRYPTO_PKI_ENGINE_EXPLICIT=ON
+            EXTRA_FLAGS[${#EXTRA_FLAGS[@]}]="$1"
+            ;;
+        *)
+            EXTRA_FLAGS[${#EXTRA_FLAGS[@]}]="$1"
+            ;;
+    esac
+    shift
+done
+
+if [ "$WITH_ASAN" == "ON" ]; then
+    EXTRA_C_FLAGS="${EXTRA_C_FLAGS} -fsanitize=address"
+fi
+
+# use Homebrew-installed OpenSSL on macOS if available
+BREW_OPENSSL="$(brew --prefix openssl 2>/dev/null)"
+if [ "$BREW_OPENSSL" ]; then
+    EXTRA_FLAGS[${#EXTRA_FLAGS[@]}]="-DOPENSSL_ROOT_DIR=$BREW_OPENSSL"
+fi
+
+# sysctl for macOS, nproc for most of everything else, echo 1 as a last resort
+NPROC="$((nproc || sysctl -n hw.logicalcpu || echo 1) 2>/dev/null)"
+
+# ensure venv is used
+VENV_DIR="${VENV_DIR:-venv}"
+if python3 -c 'import sys; exit(0) if sys.base_prefix != sys.prefix else exit(1)'; then
+    echo "Using already activated Python venv"
+else
+    if [ ! -d "${VENV_DIR}" ]; then
+        echo "Creating Python venv in ${VENV_DIR}"
+        python3 -m venv "${VENV_DIR}"
+    fi
+
+    echo "Activating Python venv in ${VENV_DIR}"
+
+    # shellcheck disable=SC1091
+    source "${VENV_DIR}/bin/activate"
+    python3 -m pip install --upgrade pip
+    python3 -m pip install -r $SCRIPT_DIR/requirements.txt
+
+fi
+
+python3 -m pip install -e $SCRIPT_DIR/tools/test-framework-tools/tools
+python3 -m pip install -e $SCRIPT_DIR/tests/integration/framework
+
+rm -f CMakeCache.txt
+rm -rf CMakeFiles
+${CMAKE_COMMAND} \
+    -D WITH_TEST=ON \
+    -D WITH_LICENSE_TEST=ON \
+    -D WITH_DEMO=ON \
+    -D WITH_DOCS=ON \
+    -D WITH_EXTRA_WARNINGS=ON \
+    -D WITH_CON_ATTR=ON \
+    -D WITH_HTTP_DOWNLOAD=ON \
+    -D WITH_THREAD_SAFETY=ON \
+    -D WITH_VALGRIND=${WITH_VALGRIND} \
+    -D WITH_INTEGRATION_TESTS=ON \
+    -D WITH_DOC_CHECK=ON \
+    -D WITH_MODULE_advanced_fw_update=ON \
+    -D WITH_MODULE_sw_mgmt=ON \
+    -D DTLS_BACKEND="${DTLS_BACKEND}" \
+    -D AVS_LOG_WITH_TRACE=ON \
+    -D WITH_EXAMPLES=${WITH_EXAMPLES} \
+    -D CMAKE_C_FLAGS="${C_FLAGS} ${EXTRA_C_FLAGS}" \
+    -D CMAKE_CXX_FLAGS="${EXTRA_C_FLAGS}" \
+    -D ANJAY_VERSION="${ANJAY_VERSION}" \
+    -D NPROC="$((3 * NPROC))" \
+    "${EXTRA_FLAGS[@]}" \
+    -H"$(dirname "$0")" -B. &&
+make clean

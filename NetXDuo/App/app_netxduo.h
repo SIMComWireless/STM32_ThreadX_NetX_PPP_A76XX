@@ -27,7 +27,9 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "nx_api.h"
+#include "nxd_dns.h"
 #include "bsp_serial.h"
+#include "net_iperf.h"   /* IPERF_ENABLE, PPP_EVT_*IPERF_DONE */
 
 /* Private includes ----------------------------------------------------------*/
 
@@ -99,6 +101,41 @@ void app_netxduo_wait_disconnect(void);
 /** Event flag for USB disconnect — modem thread waits on this */
 #define MODEM_EVT_USB_DISCONNECT   0x01
 
+/* ---- PPP event flags (shared between PPP core, iperf, NTP, Anjay) ---- */
+
+#define PPP_EVT_LINK_UP     0x01
+#define PPP_EVT_LINK_DOWN   0x02
+#define PPP_EVT_NTP_DONE    0x10
+
+extern TX_EVENT_FLAGS_GROUP ppp_events;
+
+/* ---- NetX objects — used by iperf, DNS, NTP, Anjay ---- */
+
+extern NX_IP             ip_0;
+extern NX_PACKET_POOL    pool_0;
+
+/* ---- PPP teardown flag — iperf threads check before network ops ---- */
+
+extern volatile uint8_t  ppp_destroying;
+
+/* ---- Global DNS client — used by Anjay port for hostname resolution ---- */
+
+extern NX_DNS            dns_client;
+extern volatile UINT     dns_client_initialized;
+
+/* ---- Byte pool pointer — used by external modules ---- */
+
+extern TX_BYTE_POOL     *byte_pool_ptr;
+
+/**
+ * @brief  Get the active IP instance (returns &ip_0)
+ */
+NX_IP *app_netxduo_get_active_ip(void);
+
+/**
+ * @brief  Get the active packet pool (returns &pool_0)
+ */
+NX_PACKET_POOL *app_netxduo_get_active_pool(void);
 
 /* USER CODE END EFP */
 

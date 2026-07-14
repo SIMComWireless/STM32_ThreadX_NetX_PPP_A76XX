@@ -1,0 +1,61 @@
+/*
+ * Copyright 2017-2026 AVSystem <avsystem@avsystem.com>
+ * AVSystem Anjay LwM2M SDK
+ * All rights reserved.
+ *
+ * Licensed under AVSystem Anjay LwM2M Client SDK - Non-Commercial License.
+ * See the attached LICENSE file for details.
+ */
+
+#ifndef FIRMWARE_UPDATE_H
+#define FIRMWARE_UPDATE_H
+
+#include <stddef.h>
+#include <stdio.h>
+
+#include "objects.h"
+#include <anjay/anjay_config.h>
+#include <anjay/fw_update.h>
+
+typedef struct firmware_metadata {
+    uint8_t magic[8]; // "ANJAY_FW"
+    uint16_t header_ver;
+    uint16_t force_error_case;
+    uint32_t crc;
+    uint8_t pkg_ver_len;
+    uint8_t pkg_ver[IMG_VER_STR_MAX_LEN + 1];
+} fw_metadata_t;
+
+typedef struct {
+    anjay_t *anjay;
+    fw_metadata_t metadata;
+    char *administratively_set_target_path;
+    char *next_target_path;
+    char *package_uri;
+    const char *persistence_file;
+    FILE *stream;
+    avs_net_security_info_t security_info;
+    avs_coap_udp_tx_params_t coap_tx_params;
+    avs_time_duration_t tcp_request_timeout;
+    bool auto_suspend;
+} fw_update_logic_t;
+
+int firmware_update_install(anjay_t *anjay,
+                            fw_update_logic_t *fw,
+                            const char *persistence_file,
+                            const avs_net_security_info_t *security_info,
+                            const avs_coap_udp_tx_params_t *tx_params,
+                            avs_time_duration_t tcp_request_timeout,
+                            anjay_fw_update_result_t delayed_result,
+                            bool prefer_same_socket_downloads,
+#ifdef ANJAY_WITH_SEND
+                            bool use_lwm2m_send,
+#endif // ANJAY_WITH_SEND
+                            bool auto_suspend);
+
+void firmware_update_destroy(fw_update_logic_t *fw_update);
+
+void firmware_update_set_package_path(fw_update_logic_t *fw_update,
+                                      const char *path);
+
+#endif /* FIRMWARE_UPDATE_H */

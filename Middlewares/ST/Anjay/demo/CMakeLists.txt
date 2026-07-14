@@ -1,0 +1,132 @@
+# Copyright 2017-2026 AVSystem <avsystem@avsystem.com>
+# AVSystem Anjay LwM2M SDK
+# All rights reserved.
+#
+# Licensed under AVSystem Anjay LwM2M Client SDK - Non-Commercial License.
+# See the attached LICENSE file for details.
+
+cmake_minimum_required(VERSION 3.16)
+project(lwm2m_demo C)
+
+include(CMakeDependentOption)
+
+option(WITH_DEMO_USE_STANDALONE_OBJECTS "Use standalone versions of built-in objects in demo" OFF)
+cmake_dependent_option(WITH_DEMO_TRAFFIC_INTERCEPTOR "Turn on traffic interceptor usage in demo" ON WITH_TRAFFIC_INTERCEPTOR OFF)
+
+set(SOURCES
+    demo.c
+    demo_args.c
+    demo_cmds.c
+    demo_utils.c
+    demo_time.c
+    objects/apn_conn_profile.c
+    objects/binary_app_data_container.c
+    objects/cell_connectivity.c
+    objects/conn_monitoring.c
+    objects/conn_statistics.c
+    objects/device.c
+    objects/download_diagnostics.c
+    objects/event_log.c
+    objects/ext_dev_info.c
+    objects/geopoints.c
+    objects/ipso_objects.c
+    objects/location.c
+    objects/portfolio.c
+    objects/test.c)
+
+if(WITH_DEMO_USE_STANDALONE_OBJECTS)
+    file(GLOB STANDALONE_SOURCES ../standalone/*/*.c)
+    set(SOURCES ${SOURCES} ${STANDALONE_SOURCES})
+endif()
+
+if (${ANJAY_WITH_MODULE_FW_UPDATE})
+    set(SOURCES ${SOURCES} firmware_update.c)
+endif()
+
+
+if (${ANJAY_WITH_MODULE_ADVANCED_FW_UPDATE})
+    set(SOURCES ${SOURCES}
+                advanced_firmware_update.c
+                advanced_firmware_update_app.c
+                advanced_firmware_update_addimg.c)
+
+endif()
+
+if (${ANJAY_WITH_MODULE_SW_MGMT})
+    set(SOURCES ${SOURCES} software_mgmt.c)
+endif()
+
+if (${ANJAY_WITH_LWM2M_GATEWAY})
+    set(SOURCES ${SOURCES} lwm2m_gateway.c
+                           objects/gateway_end_devices/temperature_object.c
+                           objects/gateway_end_devices/push_button_object.c
+                           objects/gateway_end_devices/binary_app_data_container.c
+                           )
+endif()
+
+if(${WITH_DEMO_TRAFFIC_INTERCEPTOR} AND NOT WIN32)
+    set(SOURCES ${SOURCES} net_traffic_interceptor.c)
+endif()
+
+if(NOT WIN32)
+    set(SOURCES ${SOURCES} objects/ip_ping.c)
+endif()
+
+set(HEADERS
+    demo.h
+    demo_args.h
+    demo_cmds.h
+    demo_utils.h
+    objects.h)
+
+if(WITH_DEMO_USE_STANDALONE_OBJECTS)
+    file(GLOB STANDALONE_HEADERS ../standalone/*/*.h)
+    set(HEADERS ${HEADERS} ${STANDALONE_HEADERS})
+endif()
+
+if (${ANJAY_WITH_MODULE_FW_UPDATE})
+    set(HEADERS ${HEADERS} firmware_update.h)
+endif()
+
+if (${ANJAY_WITH_MODULE_ADVANCED_FW_UPDATE})
+    set(HEADERS ${HEADERS} advanced_firmware_update.h)
+endif()
+
+if (${ANJAY_WITH_MODULE_SW_MGMT})
+    set(HEADERS ${HEADERS} software_mgmt.h)
+endif()
+
+set(ALL_SOURCES ${SOURCES} ${HEADERS})
+
+if(NOT TARGET anjay)
+    find_package(anjay REQUIRED HINTS "${CMAKE_CURRENT_SOURCE_DIR}/..")
+endif()
+
+find_package(Threads REQUIRED)
+
+add_executable(demo ${ALL_SOURCES})
+target_link_libraries(demo PRIVATE anjay m ${CMAKE_THREAD_LIBS_INIT})
+
+if(WITH_DEMO_USE_STANDALONE_OBJECTS)
+    target_compile_definitions(demo PRIVATE WITH_DEMO_USE_STANDALONE_OBJECTS)
+endif()
+if(WITH_DEMO_TRAFFIC_INTERCEPTOR)
+    target_compile_definitions(demo PRIVATE WITH_DEMO_TRAFFIC_INTERCEPTOR)
+endif()
+
+
+set(_is_venv "")
+include(../cmake/checkPython3venv.cmake)
+is_venv_available(_is_venv)
+
+message("Python venv available: ${_is_venv}")
+
+if (_is_venv STREQUAL "True")
+    add_custom_target(demo_firmware
+                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration/framework/framework/create_package.py
+                              -i ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/demo
+                              -o ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/demo.fw-pkg
+                      DEPENDS demo)
+else()
+    message(WARNING "Python venv is not available. Skipping demo firmware update package creation.")
+endif()

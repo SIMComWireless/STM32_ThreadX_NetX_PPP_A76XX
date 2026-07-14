@@ -1,0 +1,205 @@
+/*
+ * Copyright 2017-2026 AVSystem <avsystem@avsystem.com>
+ * AVSystem Anjay LwM2M SDK
+ * All rights reserved.
+ *
+ * Licensed under AVSystem Anjay LwM2M Client SDK - Non-Commercial License.
+ * See the attached LICENSE file for details.
+ */
+
+#ifndef DEMO_ARGS_H
+#define DEMO_ARGS_H
+
+#include <anjay/access_control.h>
+#include <anjay/anjay.h>
+#include <anjay/anjay_config.h>
+
+#ifdef ANJAY_WITH_MODULE_FW_UPDATE
+#    include <anjay/fw_update.h>
+#endif // ANJAY_WITH_MODULE_FW_UPDATE
+
+#ifdef ANJAY_WITH_MODULE_ADVANCED_FW_UPDATE
+#    include <anjay/advanced_fw_update.h>
+#endif // ANJAY_WITH_MODULE_ADVANCED_FW_UPDATE
+
+#ifdef ANJAY_WITH_MODULE_SW_MGMT
+#    include "software_mgmt.h"
+#endif // ANJAY_WITH_MODULE_SW_MGMT
+
+#include "demo_utils.h"
+#include "net_traffic_interceptor.h"
+#include "objects.h"
+
+typedef struct access_entry {
+    anjay_ssid_t ssid;
+    anjay_oid_t oid;
+    anjay_iid_t iid;
+    anjay_access_mask_t mask;
+} access_entry_t;
+
+typedef struct cmdline_args {
+    const char *endpoint_name;
+    uint16_t udp_listen_port;
+    avs_net_ssl_version_t dtls_version;
+    server_connection_args_t connection_args;
+    const char *location_csv;
+    time_t location_update_frequency_s;
+#ifdef ANJAY_WITH_MODULE_ACCESS_CONTROL
+    AVS_LIST(access_entry_t) access_entries;
+#endif // ANJAY_WITH_MODULE_ACCESS_CONTROL
+    int32_t inbuf_size;
+    int32_t outbuf_size;
+    int32_t msg_cache_size;
+    bool confirmable_notifications;
+    bool disable_stdin;
+#ifdef ANJAY_WITH_DOWNLOADER
+    size_t coap_downloader_retry_count;
+    avs_time_duration_t coap_downloader_retry_delay;
+#endif // ANJAY_WITH_DOWNLOADER
+#ifdef ANJAY_WITH_MODULE_FW_UPDATE
+    const char *fw_updated_marker_path;
+    avs_net_security_info_t fw_security_info;
+    /**
+     * If nonzero (not @ref ANJAY_FW_UPDATE_RESULT_INITIAL), Firmware Update
+     * object will be initialized in UPDATING state. In that case,
+     * @ref anjay_fw_update_set_result will be used after a while to trigger a
+     * transition to this update result. This simulates a FOTA procedure during
+     * which the client is restarted while upgrade is still in progress.
+     */
+    anjay_fw_update_result_t fw_update_delayed_result;
+#    ifdef ANJAY_WITH_SEND
+    bool fw_update_use_send;
+#    endif // ANJAY_WITH_SEND
+    bool fw_update_auto_suspend;
+#endif // ANJAY_WITH_MODULE_FW_UPDATE
+#ifdef ANJAY_WITH_MODULE_ADVANCED_FW_UPDATE
+    const char *advanced_fw_updated_marker_path;
+    avs_net_security_info_t advanced_fw_security_info;
+    /**
+     * If nonzero (not @ref ANJAY_ADVANCED_FW_UPDATE_RESULT_INITIAL),
+     * Advanced Firmware Update object will be initialized in UPDATING state.
+     * In that case, @ref anjay_advanced_fw_update_set_state_and_result will be
+     * used after a while to trigger a transition to this update result.
+     * This simulates a FOTA procedure during which the client is restarted
+     * while upgrade is still in progress.
+     */
+    anjay_advanced_fw_update_result_t advanced_fw_update_delayed_result;
+#    ifdef ANJAY_WITH_SEND
+    bool advanced_fw_update_use_send;
+#    endif // ANJAY_WITH_SEND
+    bool advanced_fw_update_auto_suspend;
+    /**
+     * This is a file path to file with original image. After additional
+     * image is downloaded, update can be performed. Updating additional
+     * image (other than main application) includes only files comparison.
+     */
+    const char *original_img_file_path;
+#endif // ANJAY_WITH_MODULE_ADVANCED_FW_UPDATE
+#ifdef ANJAY_WITH_MODULE_SW_MGMT
+    const char *sw_mgmt_persistence_file;
+    bool sw_mgmt_terminate_after_downloading;
+    bool sw_mgmt_disable_repeated_activation_deactivation;
+#    ifdef ANJAY_WITH_DOWNLOADER
+    avs_net_security_info_t sw_mgmt_security_info;
+#    endif // ANJAY_WITH_DOWNLOADER
+    /**
+     * If delayed-sw-mgmt-result is passed, first (iid=0) Software Management
+     * object will be initialized in
+     * @ref ANJAY_SW_MGMT_INITIAL_STATE_DELIVERED state. In that case, @ref
+     * anjay_sw_mgmt_finish_pkg_install will be used after a while to make
+     * transition to Installed state or report installation error. This
+     * simulates a installation procedure during which the client is restarted
+     * while the procedure is still in progress.
+     */
+    uint8_t sw_mgmt_delayed_first_instance_install_result;
+    bool sw_mgmt_auto_suspend;
+#endif // ANJAY_WITH_MODULE_SW_MGMT
+#ifdef AVS_COMMONS_STREAM_WITH_FILE
+#    ifdef ANJAY_WITH_ATTR_STORAGE
+    const char *attr_storage_file;
+#    endif // ANJAY_WITH_ATTR_STORAGE
+#    ifdef AVS_COMMONS_WITH_AVS_PERSISTENCE
+    const char *dm_persistence_file;
+#    endif // AVS_COMMONS_WITH_AVS_PERSISTENCE
+#endif     // AVS_COMMONS_STREAM_WITH_FILE
+
+    bool disable_legacy_server_initiated_bootstrap;
+#ifdef AVS_COMMONS_STREAM_WITH_FILE
+#endif // AVS_COMMONS_STREAM_WITH_FILE
+
+#ifdef ANJAY_WITH_MODULE_FACTORY_PROVISIONING
+    const char *provisioning_file;
+#endif // ANJAY_WITH_MODULE_FACTORY_PROVISIONING
+    avs_coap_udp_tx_params_t tx_params;
+    avs_net_dtls_handshake_timeouts_t dtls_hs_tx_params;
+#ifdef ANJAY_WITH_MODULE_FW_UPDATE
+    /**
+     * This flag allows to enable callback providing tx_params for firmware
+     * update only if some of parameters were changed by passing proper command
+     * line argument to demo. Otherwise tx_params should be inherited from
+     * Anjay.
+     */
+    bool fwu_tx_params_modified;
+    avs_coap_udp_tx_params_t fwu_tx_params;
+    avs_time_duration_t fwu_tcp_request_timeout;
+#endif // ANJAY_WITH_MODULE_FW_UPDATE
+#ifdef ANJAY_WITH_MODULE_ADVANCED_FW_UPDATE
+    /**
+     * This flag allows to enable callback providing tx_params for firmware
+     * update only if some of parameters were changed by passing proper command
+     * line argument to demo. Otherwise tx_params should be inherited from
+     * Anjay.
+     */
+    bool advanced_fwu_tx_params_modified;
+    avs_coap_udp_tx_params_t advanced_fwu_tx_params;
+    avs_time_duration_t advanced_fwu_tcp_request_timeout;
+#endif // ANJAY_WITH_MODULE_ADVANCED_FW_UPDATE
+#ifdef ANJAY_WITH_MODULE_SW_MGMT
+    /**
+     * This flag allows to enable callback providing tx_params for software
+     * management only if some of parameters were changed by passing proper
+     * command line argument to demo. Otherwise tx_params should be inherited
+     * from Anjay.
+     */
+    bool sw_mgmt_tx_params_modified;
+    avs_coap_udp_tx_params_t sw_mgmt_tx_params;
+    avs_time_duration_t sw_mgmt_tcp_request_timeout;
+#endif // ANJAY_WITH_MODULE_SW_MGMT
+#ifdef ANJAY_WITH_LWM2M11
+    anjay_lwm2m_version_config_t lwm2m_version_config;
+#endif // ANJAY_WITH_LWM2M11
+    size_t stored_notification_limit;
+
+    bool prefer_hierarchical_formats;
+    bool update_immediately_on_dm_change;
+    bool enable_self_notify;
+    bool connection_error_is_registration_failure;
+    bool use_connection_id;
+    bool start_offline;
+
+    uint32_t *default_ciphersuites;
+    size_t default_ciphersuites_count;
+    bool prefer_same_socket_downloads;
+#ifdef ANJAY_WITH_LWM2M11
+    const char *pkix_trust_store;
+    bool rebuild_client_cert_chain;
+#endif // ANJAY_WITH_LWM2M11
+
+    bool alternative_logger;
+
+#if defined(ANJAY_WITH_LWM2M11) && defined(WITH_AVS_COAP_TCP)
+    avs_time_duration_t tcp_request_timeout;
+#endif // defined(ANJAY_WITH_LWM2M11) && defined(WITH_AVS_COAP_TCP)
+
+    AVS_LIST(anjay_demo_allocated_buffer_t) allocated_buffers;
+#ifdef ANJAY_WITH_LWM2M_GATEWAY
+    bool lwm2m_gateway_enabled;
+#endif // ANJAY_WITH_LWM2M_GAYEWAY
+#ifdef WITH_DEMO_TRAFFIC_INTERCEPTOR
+    const char *traffic_intercept_path;
+#endif // WITH_DEMO_TRAFFIC_INTERCEPTOR
+} cmdline_args_t;
+
+int demo_parse_argv(cmdline_args_t *parsed_args, int argc, char **argv);
+
+#endif

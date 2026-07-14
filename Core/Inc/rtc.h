@@ -36,6 +36,18 @@ extern RTC_HandleTypeDef hrtc;
 
 /* USER CODE BEGIN Private defines */
 
+/* Cached RTC time — updated every second by RTC IRQ, read by elog */
+typedef struct {
+    uint8_t hours;
+    uint8_t minutes;
+    uint8_t seconds;
+    uint8_t date;
+    uint8_t month;
+    uint8_t year;   /* year - 2000 */
+} rtc_cached_time_t;
+
+extern volatile rtc_cached_time_t rtc_time_cache;
+
 /* USER CODE END Private defines */
 
 void MX_RTC_Init(void);

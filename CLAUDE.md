@@ -104,7 +104,7 @@ All CubeMX-generated source files use `/* USER CODE BEGIN ... */` / `/* USER COD
 ### NetX PPP + DNS + SNTP
 
 - PPP: `nx_ppp_create()` → `nx_ppp_start()` → link-up callback → DNS/SNTP
-- DNS: global `dns_client` (mutex-protected), created on-demand by `resolve_host()`, cleaned up on PPP link-down with try-lock to avoid deadlock
+- DNS: global `dns_client`, created on-demand by `dns_client_init()` on PPP link-up, uses native `nx_dns_host_by_name_get()` API (no BSD socket layer)
 - SNTP: `nx_sntp_client_create()` → `nx_sntp_client_run_unicast()` → `nx_sntp_client_request_unicast_time()`
 - NTP server: `NTP_SERVER_HOST` macro (default "ntp.aliyun.com", change in app_netxduo.c)
 - NTP epoch: NTP seconds since 1900 → Unix seconds = `ntp_seconds - 2208988800`
@@ -132,7 +132,8 @@ All CubeMX-generated source files use `/* USER CODE BEGIN ... */` / `/* USER COD
 | `Drivers/BSP/A7683E/a7683e.c` | A7683E AT command layer |
 | `EasyLogger/src/elog.c` | Log engine (color, async, tags) |
 | `EasyLogger/src/elog_port.c` | LPUART1 output port |
-| `NetXDuo/App/app_netxduo.c` | PPP + DNS + SNTP initialization |
+| `NetXDuo/App/app_netxduo.c` | PPP + DNS + SNTP + TCP/UDP iperf (native NetX Duo API) |
+| `Middlewares/ST/Anjay/port/avs_net_impl_netxduo.c` | Anjay socket impl using native nx_udp_socket_* API |
 | `AZURE_RTOS/App/app_azure_rtos.c` | TX/NX byte pool creation |
 | `xiot.ioc` | CubeMX project (regenerates Core/Src/) |
 

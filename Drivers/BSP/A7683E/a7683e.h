@@ -169,6 +169,12 @@ UINT a7683e_send_at(const char *cmd, char *resp, uint16_t resp_len, uint32_t tim
  */
 UINT a7683e_check_alive(void);
 
+/**
+ * @brief  Get the modem IMEI read during a7683e_init().
+ * @return Pointer to 15-digit IMEI string, or empty string if not available.
+ */
+const char *a7683e_get_imei(void);
+
 #if CMUX_ENABLE
 
 /**
