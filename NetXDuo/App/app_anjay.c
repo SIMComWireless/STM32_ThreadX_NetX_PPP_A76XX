@@ -58,6 +58,7 @@
 #define BOOTSTRAP_PSK_KEY       "123456789"
 #endif
 
+#ifndef ANJAY_USE_BOOTSTRAP
 /* ===== LwM2M Server Configuration ===== */
 /* Used only when ANJAY_USE_BOOTSTRAP=0 (direct connection) */
 #ifndef LWM2M_SERVER_URI
@@ -71,6 +72,8 @@
 #ifndef LWM2M_PSK_KEY
 #define LWM2M_PSK_KEY           "g9p8RkSKaayNWxN9"
 #endif
+
+#endif /* ANJAY_USE_BOOTSTRAP */
 
 /* Endpoint name - must be unique per device */
 #ifndef ANJAY_ENDPOINT_NAME
@@ -94,18 +97,18 @@ static void anjay_log_handler(avs_log_level_t level,
     switch (level) {
     case AVS_LOG_TRACE:
     case AVS_LOG_DEBUG:
-        elog_d("AVS", "[%s] %s", module, message);
+        elog_i("AVS TRACE", "[%s] %s", module, message);
         break;
     case AVS_LOG_INFO:
-        elog_i("AVS", "[%s] %s", module, message);
+        elog_i("AVS INFO", "[%s] %s", module, message);
         break;
     case AVS_LOG_WARNING:
-        elog_w("AVS", "[%s] %s", module, message);
+        elog_w("AVS WARNING", "[%s] %s", module, message);
         break;
     case AVS_LOG_ERROR:
     case AVS_LOG_QUIET:
     default:
-        elog_e("AVS", "[%s] %s", module, message);
+        elog_e("AVS ERROR", "[%s] %s", module, message);
         break;
     }
 }
