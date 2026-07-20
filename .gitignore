@@ -1,0 +1,20 @@
+# Keil build output
+MDK-ARM/xiot/*.o
+MDK-ARM/xiot/*.d
+MDK-ARM/xiot/*.crf
+MDK-ARM/xiot/*.dep
+MDK-ARM/xiot/*.lst
+MDK-ARM/xiot/*.map
+MDK-ARM/xiot/*.htm
+MDK-ARM/xiot/*.lnp
+MDK-ARM/xiot/*.sct
+MDK-ARM/xiot/*.axf
+MDK-ARM/xiot/*.bin
+MDK-ARM/xiot/*.hex
+MDK-ARM/xiot/*.htm
+MDK-ARM/xiot/Objects/
+MDK-ARM/xiot/Listings/
+
+# Keil user-specific
+MDK-ARM/*.uvguix.*
+MDK-ARM/*.uvoptx
