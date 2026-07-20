@@ -50,7 +50,10 @@ extern "C" {
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/
-void Error_Handler(void);
+void _Error_Handler(const char *file, int line);
+#define Error_Handler() _Error_Handler(__FILE__, __LINE__)
+
+extern volatile uint8_t g_lse_available;
 
 /* USER CODE BEGIN EFP */
 

@@ -72,7 +72,7 @@ UINT  ux_host_event_callback(ULONG event, UX_HOST_CLASS *p_host_class, VOID *p_i
 /* USER CODE BEGIN PD */
 #define APP_QUEUE_SIZE                               5
 #define USBX_APP_STACK_SIZE                          1024
-#define USBX_MEMORY_SIZE                             (80 * 1024)
+#define USBX_MEMORY_SIZE                             (30 * 1024)
 #define NEW_RECEIVED_DATA                            0x01
 #define NEW_DATA_TO_SEND                             0x02
 #define BUTTON_KEY_PIN                               1

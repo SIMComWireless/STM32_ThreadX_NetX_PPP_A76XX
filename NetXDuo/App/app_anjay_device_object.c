@@ -11,7 +11,9 @@
 #include <string.h>
 
 #include <anjay/anjay.h>
+#include <anjay/core.h>
 #include <avsystem/commons/avs_defs.h>
+#include <avsystem/commons/avs_sched.h>
 
 #include "stm32l4xx_hal.h"
 #include "a7683e.h"
@@ -35,7 +37,6 @@
 
 typedef struct device_object_struct {
     const anjay_dm_object_def_t *def;
-    bool reboot;
 } device_object_t;
 
 static inline device_object_t *
@@ -123,20 +124,29 @@ static int resource_read(anjay_t *anjay,
     }
 }
 
+static void perform_reboot(avs_sched_t *sched, const void *unused) {
+    (void) sched;
+    (void) unused;
+    elog_e("DEVICE", "Rebooting device as requested by LwM2M Server...");
+    HAL_Delay(100);
+    HAL_NVIC_SystemReset();
+}
+
 static int resource_execute(anjay_t *anjay,
                             const anjay_dm_object_def_t *const *obj_ptr,
                             anjay_iid_t iid,
                             anjay_rid_t rid,
                             anjay_execute_ctx_t *arg_ctx) {
     (void) arg_ctx;
-
-    device_object_t *obj = get_obj(obj_ptr);
-    assert(obj);
+    (void) obj_ptr;
     assert(iid == 0);
 
     switch (rid) {
     case RID_REBOOT:
-        obj->reboot = true;
+        if (AVS_SCHED_NOW(anjay_get_scheduler(anjay), NULL,
+                          perform_reboot, NULL, 0)) {
+            return ANJAY_ERR_INTERNAL;
+        }
         return 0;
 
     default:
@@ -187,13 +197,3 @@ int device_object_install(anjay_t *anjay) {
     return anjay_register_object(anjay, &DEVICE_OBJECT.def);
 }
 
-void device_object_update(anjay_t *anjay) {
-    (void) anjay;
-
-    if (DEVICE_OBJECT.reboot) {
-        /* Small delay to let Anjay send response */
-        HAL_Delay(100);
-        elog_e("DEVICE", "Rebooting device as requested by LwM2M Server...");
-        HAL_NVIC_SystemReset();
-    }
-}

@@ -282,7 +282,6 @@ static void anjay_thread_entry(ULONG input) {
 
     while (1) {
         (void) anjay_event_loop_run(anjay, loop_timeout);
-        device_object_update(anjay);
     }
 
 cleanup:

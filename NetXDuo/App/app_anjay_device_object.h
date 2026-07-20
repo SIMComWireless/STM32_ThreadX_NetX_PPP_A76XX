@@ -20,10 +20,4 @@ int device_object_install(anjay_t *anjay);
  */
 const char *device_object_get_imei(void);
 
-/**
- * Call periodically from the Anjay event loop.
- * Handles deferred reboot after execute command.
- */
-void device_object_update(anjay_t *anjay);
-
 #endif /* APP_ANJAY_DEVICE_OBJECT_H */

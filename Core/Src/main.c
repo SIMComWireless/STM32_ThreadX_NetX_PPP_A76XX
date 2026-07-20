@@ -50,7 +50,6 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -144,6 +143,9 @@ int main(void)
   /* USER CODE END 3 */
 }
 
+/* Global flag: 1 = LSE working, 0 = LSE failed, use LSI for RTC */
+volatile uint8_t g_lse_available = 0;
+
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -160,23 +162,33 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
+  /* Try to enable LSE with timeout detection */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) == HAL_OK)
+  {
+    g_lse_available = 1;
+  }
+  else
+  {
+    /* LSE failed, will use LSI for RTC */
+    g_lse_available = 0;
+  }
+
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSI
-                              |RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_LSE;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_LSI;
+  RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
   RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.LSIState = RCC_LSI_ON;
-  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 2;
-  RCC_OscInitStruct.PLL.PLLN = 30;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 1;
+  RCC_OscInitStruct.PLL.PLLN = 60;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
-  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
+  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV4;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -195,6 +207,9 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+
+  /** Enable MSI Auto calibration - disabled, using HSE */
+  /* HAL_RCCEx_EnableMSIPLLMode(); */
 }
 
 /**
@@ -245,14 +260,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   * @brief  This function is executed in case of error occurrence.
   * @retval None
   */
-void Error_Handler(void)
+void _Error_Handler(const char *file, int line)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   //__disable_irq();
   while (1)
   {
-    printf("Error_Handler\r\n");
+    printf("Error_Handler @ %s:%d\r\n", file, line);
   }
   /* USER CODE END Error_Handler_Debug */
 }

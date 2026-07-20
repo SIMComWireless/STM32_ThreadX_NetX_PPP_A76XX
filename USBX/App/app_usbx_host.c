@@ -70,7 +70,6 @@ __ALIGN_BEGIN ux_app_devInfotypeDef     ux_dev_info  __ALIGN_END;
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
 extern void MX_USB_OTG_FS_USB_Init(void);
-extern void Error_Handler(void);
 /* USER CODE END PFP */
 /**
   * @brief  Application USBX Host Initialization.
