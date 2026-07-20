@@ -30,7 +30,7 @@
 #define RID_SUPPORTED_BINDING_AND_MODES  16
 #define RID_SOFTWARE_VERSION             19
 
-/* Device info — customize as needed */
+/* Default values if modem info not available */
 #define DEVICE_MANUFACTURER     "SIMCom"
 #define DEVICE_MODEL_NUMBER     "A7683E"
 #define DEVICE_FIRMWARE_VERSION "1.0.0"
@@ -90,22 +90,24 @@ static int resource_read(anjay_t *anjay,
     (void) obj_ptr;
     assert(iid == 0);
 
+    const a7683e_info_t *info = a7683e_get_info();
+
     switch (rid) {
     case RID_MANUFACTURER:
         assert(riid == ANJAY_ID_INVALID);
-        return anjay_ret_string(ctx, DEVICE_MANUFACTURER);
+        return anjay_ret_string(ctx, info->manufacturer[0] ? info->manufacturer : DEVICE_MANUFACTURER);
 
     case RID_MODEL_NUMBER:
         assert(riid == ANJAY_ID_INVALID);
-        return anjay_ret_string(ctx, DEVICE_MODEL_NUMBER);
+        return anjay_ret_string(ctx, info->model[0] ? info->model : DEVICE_MODEL_NUMBER);
 
     case RID_SERIAL_NUMBER:
         assert(riid == ANJAY_ID_INVALID);
-        return anjay_ret_string(ctx, a7683e_get_imei());
+        return anjay_ret_string(ctx, info->imei);
 
     case RID_FIRMWARE_VERSION:
         assert(riid == ANJAY_ID_INVALID);
-        return anjay_ret_string(ctx, DEVICE_FIRMWARE_VERSION);
+        return anjay_ret_string(ctx, info->revision[0] ? info->revision : DEVICE_FIRMWARE_VERSION);
 
     case RID_ERROR_CODE:
         assert(riid == 0);
@@ -117,7 +119,7 @@ static int resource_read(anjay_t *anjay,
 
     case RID_SOFTWARE_VERSION:
         assert(riid == ANJAY_ID_INVALID);
-        return anjay_ret_string(ctx, DEVICE_FIRMWARE_VERSION);
+        return anjay_ret_string(ctx, info->revision[0] ? info->revision : DEVICE_FIRMWARE_VERSION);
 
     default:
         return ANJAY_ERR_METHOD_NOT_ALLOWED;
@@ -189,9 +191,9 @@ static device_object_t DEVICE_OBJECT = {
 };
 
 int device_object_install(anjay_t *anjay) {
-    /* IMEI was already read during a7683e_init() — just verify it's available */
-    const char *imei = a7683e_get_imei();
-    if (imei[0] == '\0') {
+    /* Verify modem info is available */
+    const a7683e_info_t *info = a7683e_get_info();
+    if (info->imei[0] == '\0') {
         elog_w("DEVICE", "IMEI not available — Serial Number will be empty");
     }
     return anjay_register_object(anjay, &DEVICE_OBJECT.def);

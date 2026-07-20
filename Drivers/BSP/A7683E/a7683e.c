@@ -42,19 +42,104 @@ static bsp_serial_t *modem_serial = NULL;
 
 static char resp_buf[A7683E_RESP_BUF_SIZE];
 
-/** IMEI read from modem via AT+GSN during init */
-static char modem_imei[16] = {0};
+/** Modem info collected during init */
+static a7683e_info_t modem_info = {0};
 
 /**
- * @brief  Get the modem IMEI read during a7683e_init().
- * @return Pointer to 15-digit IMEI string, or empty string if not available.
+ * @brief  Get modem information collected during a7683e_init().
+ * @return Pointer to static a7683e_info_t structure (read-only).
  */
-const char *a7683e_get_imei(void)
+const a7683e_info_t *a7683e_get_info(void)
 {
-    return modem_imei;
+    return &modem_info;
+}
+
+/**
+ * @brief  Get current RSSI signal strength via AT+CSQ.
+ * @return RSSI value in dBm (e.g. -113 to -51), or -999 if unavailable.
+ *         Maps AT+CSQ rssi: 0=-113dBm, 1=-111dBm, 2..30=-109..-53dBm, 31=-51dBm.
+ */
+int a7683e_get_rssi(void)
+{
+    char resp_buf[A7683E_RESP_BUF_SIZE];
+    UINT status;
+
+    status = a7683e_send_at("AT+CSQ", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+    if (status == A7683E_OK)
+    {
+        int rssi_raw = 0;
+        char *p = strstr(resp_buf, "+CSQ:");
+        if (p && sscanf(p, "+CSQ: %d", &rssi_raw) == 1)
+        {
+            if (rssi_raw == 0)       return -113;
+            if (rssi_raw == 1)       return -111;
+            if (rssi_raw >= 2 && rssi_raw <= 30) return -113 + 2 * rssi_raw;
+            if (rssi_raw == 31)      return -51;
+        }
+    }
+
+    return -999;  /* unavailable */
 }
 
 /* ---------- Private helpers ---------------------------------------------- */
+
+/**
+ * @brief  Parse ATI response into modem_info structure.
+ *         Expected format:
+ *           Manufacturer: SIMCOM INCORPORATED
+ *           Model: A7683E-LAXS
+ *           Revision: V11.0.01
+ *           IMEI: 862095060018816
+ * @param  ati_buf  Raw ATI response string
+ */
+static void parse_ati(const char *ati_buf)
+{
+    const char *line = ati_buf;
+
+    while (*line) {
+        /* Advance to next line */
+        while (*line && *line != '\n') line++;
+        if (*line == '\n') line++;
+        if (!*line) break;
+
+        /* Skip leading whitespace / CR */
+        while (*line == ' ' || *line == '\r') line++;
+
+        /* Match "Key: Value" lines */
+        const char *key_end = strchr(line, ':');
+        if (!key_end) continue;
+
+        const char *val = key_end + 1;
+        while (*val == ' ') val++;
+
+        size_t val_len = 0;
+        while (val[val_len] && val[val_len] != '\r' && val[val_len] != '\n')
+            val_len++;
+
+        size_t key_len = (size_t)(key_end - line);
+
+        if (key_len == 13 && strncmp(line, "Manufacturer:", 13) == 0) {
+            if (val_len >= sizeof(modem_info.manufacturer)) val_len = sizeof(modem_info.manufacturer) - 1;
+            memcpy(modem_info.manufacturer, val, val_len);
+            modem_info.manufacturer[val_len] = '\0';
+        }
+        else if (key_len == 5 && strncmp(line, "Model:", 6) == 0) {
+            if (val_len >= sizeof(modem_info.model)) val_len = sizeof(modem_info.model) - 1;
+            memcpy(modem_info.model, val, val_len);
+            modem_info.model[val_len] = '\0';
+        }
+        else if (key_len == 8 && strncmp(line, "Revision:", 9) == 0) {
+            if (val_len >= sizeof(modem_info.revision)) val_len = sizeof(modem_info.revision) - 1;
+            memcpy(modem_info.revision, val, val_len);
+            modem_info.revision[val_len] = '\0';
+        }
+        else if (key_len == 4 && strncmp(line, "IMEI:", 5) == 0) {
+            if (val_len >= sizeof(modem_info.imei)) val_len = sizeof(modem_info.imei) - 1;
+            memcpy(modem_info.imei, val, val_len);
+            modem_info.imei[val_len] = '\0';
+        }
+    }
+}
 
 static void flush_rx(void)
 {
@@ -413,33 +498,21 @@ UINT a7683e_init(void)
     elog_d(TAG, "[2/7] Disabling echo...");
     a7683e_send_at("ATE0", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
 
-    /* Step 2b: Read IMEI (AT+GSN) — must be in AT command mode */
+    /* Step 2b: Read modem info (ATI) — includes Manufacturer, Model, Revision, IMEI */
     {
-        char imei_buf[A7683E_RESP_BUF_SIZE];
-        if (a7683e_send_at("AT+GSN", imei_buf, sizeof(imei_buf), 2000) == A7683E_OK) {
-            /* Response: "AT+GSN\r\r\n<IMEI>\r\n\r\nOK\r\n"
-             * Skip echo line, find first digit sequence */
-            const char *p = imei_buf;
-            while (*p) {
-                while (*p && *p != '\n') p++;
-                if (*p == '\n') p++;
-                if (*p >= '0' && *p <= '9') {
-                    size_t pos = 0;
-                    while (p[pos] >= '0' && p[pos] <= '9' && pos < sizeof(modem_imei) - 1) {
-                        modem_imei[pos] = p[pos];
-                        pos++;
-                    }
-                    modem_imei[pos] = '\0';
-                    break;
-                }
-            }
-            if (strlen(modem_imei) == 15) {
-                elog_i(TAG, "IMEI: %s", modem_imei);
+        char ati_buf[A7683E_RESP_BUF_SIZE];
+        if (a7683e_send_at("ATI", ati_buf, sizeof(ati_buf), 2000) == A7683E_OK) {
+            parse_ati(ati_buf);
+            elog_i(TAG, "Manufacturer: %s", modem_info.manufacturer);
+            elog_i(TAG, "Model: %s",        modem_info.model);
+            elog_i(TAG, "Revision: %s",     modem_info.revision);
+            if (strlen(modem_info.imei) == 15) {
+                elog_i(TAG, "IMEI: %s",     modem_info.imei);
             } else {
-                elog_w(TAG, "IMEI parse failed (got %d digits)", (int)strlen(modem_imei));
+                elog_w(TAG, "IMEI parse failed (got %d digits)", (int)strlen(modem_info.imei));
             }
         } else {
-            elog_w(TAG, "AT+GSN failed — IMEI not available");
+            elog_w(TAG, "ATI failed — modem info not available");
         }
     }
 

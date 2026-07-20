@@ -29,6 +29,7 @@
 #include <standalone_security.h>
 #include <standalone_server.h>
 #include "app_anjay_device_object.h"
+#include "app_anjay_conn_stats_object.h"
 
 /* ===== avs_log handler — redirect to elog ===== */
 #include <avsystem/commons/avs_log.h>
@@ -184,6 +185,14 @@ static void anjay_thread_entry(ULONG input) {
     }
 
     elog_i("ANJAY", "Device object (/3) installed");
+
+    /* ===== 4c. Install Connectivity Statistics Object (/7) ===== */
+    if (conn_stats_object_install(anjay)) {
+        elog_e("ANJAY", "Failed to install Connectivity Statistics Object (/7)");
+        goto cleanup;
+    }
+
+    elog_i("ANJAY", "Connectivity Statistics object (/7) installed");
 
     /* ===== 5. Configure Security ===== */
     elog_i("ANJAY", "Endpoint: %s", ANJAY_ENDPOINT_NAME);

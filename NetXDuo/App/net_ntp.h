@@ -23,6 +23,11 @@
 #define NTP_TZ_OFFSET_HOURS     8
 #endif
 
+/** Periodic NTP re-sync interval in seconds (default: 120 = 2 minutes) */
+#ifndef NTP_SYNC_INTERVAL_SEC
+#define NTP_SYNC_INTERVAL_SEC   120
+#endif
+
 /** NTP thread priority and stack size */
 #define NTP_THREAD_PRIO         31
 #define NTP_THREAD_STACK        (1024 * 3)

@@ -504,6 +504,11 @@
               <FileType>1</FileType>
               <FilePath>..\NetXDuo\App\app_anjay_device_object.c</FilePath>
             </File>
+            <File>
+              <FileName>app_anjay_conn_stats_object.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\NetXDuo\App\app_anjay_conn_stats_object.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

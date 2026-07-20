@@ -61,6 +61,19 @@ extern "C" {
 #define A7683E_NO_SIGNAL        0x04
 #define A7683E_PPP_FAIL         0x05
 
+/* ---------- Modem info structure ----------------------------------------- */
+
+/**
+ * @brief  Modem information collected during a7683e_init().
+ *         Populated from ATI and AT+CGMR responses.
+ */
+typedef struct {
+    char manufacturer[32];  /* e.g. "SIMCOM INCORPORATED" */
+    char model[32];         /* e.g. "A7683E-LAXS" */
+    char revision[32];      /* e.g. "V11.0.01" */
+    char imei[16];          /* 15-digit IMEI */
+} a7683e_info_t;
+
 /* ---------- AT send function type ---------------------------------------- */
 
 /**
@@ -122,6 +135,12 @@ UINT a7683e_sync(void);
 UINT a7683e_init(void);
 
 /**
+ * @brief  Get modem information collected during a7683e_init().
+ * @return Pointer to static a7683e_info_t structure (read-only).
+ */
+const a7683e_info_t *a7683e_get_info(void);
+
+/**
  * @brief  Pre-dial queries: check EPS registration, activate PDP context,
  *         verify PDP address. Call before a7683e_ppp_dial().
  * @param  send_at  AT send function (a7683e_send_at or a7683e_cmux_send_at)
@@ -170,10 +189,11 @@ UINT a7683e_send_at(const char *cmd, char *resp, uint16_t resp_len, uint32_t tim
 UINT a7683e_check_alive(void);
 
 /**
- * @brief  Get the modem IMEI read during a7683e_init().
- * @return Pointer to 15-digit IMEI string, or empty string if not available.
+ * @brief  Get current RSSI signal strength via AT+CSQ.
+ * @return RSSI value in dBm (e.g. -113 to -51), or -999 if unavailable.
+ *         Maps AT+CSQ rssi: 0=-113dBm, 1=-111dBm, 2..30=-109..-53dBm, 31=-51dBm.
  */
-const char *a7683e_get_imei(void);
+int a7683e_get_rssi(void);
 
 #if CMUX_ENABLE
 
