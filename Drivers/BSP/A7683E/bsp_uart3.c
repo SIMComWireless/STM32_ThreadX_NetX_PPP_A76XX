@@ -39,7 +39,7 @@ static uint8_t uart3_rb_data[BSP_UART3_RING_BUF_SIZE];
 static lwrb_t  uart3_rb;
 
 /* RX data hook — when set, ISR routes data to hook instead of ring buffer */
-static bsp_uart3_rx_hook_t rx_hook;
+static volatile bsp_uart3_rx_hook_t rx_hook;
 
 /* RX overflow counter — incremented in ISR when ring buffer is full.
  * Readable from application context via bsp_uart3_get_rx_drop_count().

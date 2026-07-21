@@ -220,7 +220,10 @@ static void ppp_link_up_callback(NX_PPP *ppp_ptr)
     (void)ppp_ptr;
     elog_d(TAG, "PPP link UP");
     print_ip_addresses();
-    dns_client_init();
+    UINT dns_rc = dns_client_init();
+    if (dns_rc != NX_SUCCESS) {
+        elog_e(TAG, "DNS client init failed in link-up callback: 0x%02X", dns_rc);
+    }
     tx_event_flags_set(&ppp_events, PPP_EVT_LINK_UP, TX_OR);
 }
 
@@ -328,14 +331,8 @@ UINT MX_NetXDuo_Init(VOID *memory_ptr)
 
     /* ---- Create threads ---- */
 
-    /* PPP Read: TX_DONT_START — resumed later by app_netxduo_create_ppp() */
-    netx_init_step = 9;
-    status = tx_thread_create(&ppp_read_thread, "PPP Read",
-                               ppp_read_thread_entry, 0,
-                               ppp_read_stack_ptr, PPP_READ_THREAD_STACK,
-                               PPP_READ_THREAD_PRIO, PPP_READ_THREAD_PRIO,
-                               TX_NO_TIME_SLICE, TX_DONT_START);
-    if (status != TX_SUCCESS) { netx_init_status = status; return status; }
+    /* PPP Read thread is created later by app_netxduo_create_ppp() with TX_AUTO_START.
+     * Creating it here with TX_DONT_START would double-create on the same control block. */
 
     /* NTP, TCP/UDP iperf: TX_AUTO_START */
     netx_init_step = 10;
@@ -366,6 +363,7 @@ UINT MX_NetXDuo_Init(VOID *memory_ptr)
 
     /* NOTE: PPP + IP creation deferred to app_netxduo_create_ppp()
      * (needs thread context for nx_ppp_create) */
+    dns_early_init();
     MX_Anjay_Init();
     /* USER CODE BEGIN MX_NetXDuo_Init */
     /* USER CODE END MX_NetXDuo_Init */
@@ -427,16 +425,15 @@ UINT app_netxduo_create_ppp(void)
     nx_ppp_link_down_notify(&ppp_0, ppp_link_down_callback);
     nx_ppp_ip_address_assign(&ppp_0, 0, 0);
 
-    /* Step 4: Start PPP read thread */
-    if (!ppp_created) {
-        status = tx_thread_resume(&ppp_read_thread);
-    } else {
-        status = tx_thread_create(&ppp_read_thread, "PPP Read",
-                                   ppp_read_thread_entry, 0,
-                                   ppp_read_stack_ptr, PPP_READ_THREAD_STACK,
-                                   PPP_READ_THREAD_PRIO, PPP_READ_THREAD_PRIO,
-                                   TX_NO_TIME_SLICE, TX_AUTO_START);
-    }
+    /* Step 4: (Re-)create PPP read thread.
+     * On first call the thread was created with TX_DONT_START in MX_NetXDuo_Init;
+     * on reconnect the old thread was deleted in destroy_ppp().
+     * Always recreate to ensure a valid thread control block. */
+    status = tx_thread_create(&ppp_read_thread, "PPP Read",
+                               ppp_read_thread_entry, 0,
+                               ppp_read_stack_ptr, PPP_READ_THREAD_STACK,
+                               PPP_READ_THREAD_PRIO, PPP_READ_THREAD_PRIO,
+                               TX_NO_TIME_SLICE, TX_AUTO_START);
     if (status != NX_SUCCESS) {
         elog_e(TAG, "PPP read thread start failed: 0x%02X", status);
         return status;
@@ -453,10 +450,16 @@ UINT app_netxduo_create_ppp(void)
 UINT app_netxduo_start_ppp(void)
 {
     UINT status = nx_ppp_start(&ppp_0);
-    if (status == NX_SUCCESS)
+    if (status == NX_SUCCESS) {
         elog_d(TAG, "PPP negotiation started");
-    else
+    } else if (status == NX_PPP_ALREADY_STARTED) {
+        /* Modem sent LCP frames immediately after CONNECT — PPP is already
+         * negotiating.  Treat as success; link-up callback will fire. */
+        elog_i(TAG, "PPP already started (modem-initiated)");
+        status = NX_SUCCESS;
+    } else {
         elog_e(TAG, "nx_ppp_start failed: 0x%02X", status);
+    }
     return status;
 }
 

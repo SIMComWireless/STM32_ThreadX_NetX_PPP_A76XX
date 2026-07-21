@@ -78,7 +78,7 @@ void PeriphCommonClock_Config(void);
 PUTCHAR_PROTOTYPE
 {
   extern UART_HandleTypeDef hlpuart1;
-  HAL_UART_Transmit(&hlpuart1, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+  HAL_UART_Transmit(&hlpuart1, (uint8_t *)&ch, 1, 100);
   return ch;
 }
 /* USER CODE END 0 */
@@ -264,10 +264,10 @@ void _Error_Handler(const char *file, int line)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
-  //__disable_irq();
+  __disable_irq();
+  printf("Error_Handler @ %s:%d\r\n", file, line);
   while (1)
   {
-    printf("Error_Handler @ %s:%d\r\n", file, line);
   }
   /* USER CODE END Error_Handler_Debug */
 }

@@ -1,15 +1,16 @@
 /*
  * LwM2M Connectivity Statistics Object (/7) implementation for Anjay
  *
- * Resources:
- *   0  TX Data (bytes)
- *   1  RX Data (bytes)
- *   2  TX Packets
- *   3  RX Packets
- *   4  Signal Strength (dBm)
- *   5  Signal Quality
- *  10  Period (seconds)
- *  11  Statistics Collection Start (execute)
+ * Resources (per OMA LwM2M TS):
+ *   0  Tx Data (KB)
+ *   1  Rx Data (KB)
+ *   2  Tx Packets
+ *   3  Rx Packets
+ *   4  Max Message Size (bytes, approximated)
+ *   5  Average Message Size (bytes)
+ *   6  Start collection (execute)
+ *   7  Stop collection (execute)
+ *   8  Collection Period (seconds)
  */
 
 #ifndef APP_ANJAY_CONN_STATS_OBJECT_H

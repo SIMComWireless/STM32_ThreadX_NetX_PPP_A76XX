@@ -37,6 +37,12 @@ extern NX_PPP            ppp_0;
 
 NX_DNS       dns_client;
 volatile UINT dns_client_initialized = 0;
+static TX_MUTEX dns_init_mutex;
+
+void dns_early_init(void)
+{
+    tx_mutex_create(&dns_init_mutex, "DNS Init Mutex", TX_INHERIT);
+}
 
 /* ============================================================================
  * DNS client initialization
@@ -48,11 +54,21 @@ UINT dns_client_init(void)
         return NX_SUCCESS;
     }
 
+    /* Serialize initialization — may be called from link-up callback and other threads */
+    tx_mutex_get(&dns_init_mutex, TX_WAIT_FOREVER);
+
+    /* Double-check after acquiring lock */
+    if (dns_client_initialized) {
+        tx_mutex_put(&dns_init_mutex);
+        return NX_SUCCESS;
+    }
+
     UINT status;
 
     status = nx_dns_create(&dns_client, &ip_0, (UCHAR *)"DNS Client");
     if (status != NX_SUCCESS) {
         elog_e(TAG_DNS, "DNS client create failed: 0x%02X", status);
+        tx_mutex_put(&dns_init_mutex);
         return status;
     }
 
@@ -61,6 +77,7 @@ UINT dns_client_init(void)
     status = nx_dns_packet_pool_set(&dns_client, &pool_0);
     if (status != NX_SUCCESS) {
         elog_e(TAG_DNS, "DNS packet pool set failed: 0x%02X", status);
+        tx_mutex_put(&dns_init_mutex);
         return status;
     }
 
@@ -77,6 +94,7 @@ UINT dns_client_init(void)
     nx_dns_server_add(&dns_client, IP_ADDRESS(8, 8, 8, 8));     /* Google DNS */
 
     dns_client_initialized = 1;
+    tx_mutex_put(&dns_init_mutex);
     elog_i(TAG_DNS, "DNS client initialized (carrier: %s/%s)",
            dns1_rc == NX_SUCCESS ? "OK" : "none",
            dns2_rc == NX_SUCCESS ? "OK" : "none");

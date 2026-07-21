@@ -44,6 +44,16 @@ extern HCD_HandleTypeDef               hhcd_USB_OTG_FS;
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 
+/* Fault diagnostics — survives reset if placed in .noinit section */
+typedef struct {
+    uint32_t r0, r1, r2, r3;
+    uint32_t r12, lr, pc, psr;
+    uint32_t cfsr, hfsr, dfsr, afsr;
+    uint32_t bfar, mmfar;
+} fault_info_t;
+
+__attribute__((section(".noinit"))) volatile fault_info_t fault_info;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -97,6 +107,25 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
+  /* Capture stacked registers from the exception frame.
+   * sp points to the context saved by hardware on exception entry. */
+  __asm volatile (
+      "TST LR, #4         \n"
+      "ITE EQ             \n"
+      "MRSEQ R0, MSP      \n"
+      "MRSNE R0, PSP      \n"
+      "LDR R1, =fault_info\n"
+      "LDMIA R0, {R2-R9}  \n"
+      "STMIA R1, {R2-R9}  \n"
+      ::: "memory"
+  );
+  /* Capture SCB fault status registers */
+  fault_info.cfsr  = *((volatile uint32_t *)0xE000ED28);
+  fault_info.hfsr  = *((volatile uint32_t *)0xE000ED2C);
+  fault_info.dfsr  = *((volatile uint32_t *)0xE000ED30);
+  fault_info.afsr  = *((volatile uint32_t *)0xE000ED3C);
+  fault_info.bfar  = *((volatile uint32_t *)0xE000ED38);
+  fault_info.mmfar = *((volatile uint32_t *)0xE000ED34);
 
   /* USER CODE END HardFault_IRQn 0 */
   while (1)

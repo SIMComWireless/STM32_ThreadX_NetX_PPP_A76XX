@@ -190,6 +190,12 @@ static device_object_t DEVICE_OBJECT = {
     .def = &OBJ_DEF
 };
 
+const char *device_object_get_imei(void)
+{
+    const a7683e_info_t *info = a7683e_get_info();
+    return (info && info->imei[0]) ? info->imei : "";
+}
+
 int device_object_install(anjay_t *anjay) {
     /* Verify modem info is available */
     const a7683e_info_t *info = a7683e_get_info();

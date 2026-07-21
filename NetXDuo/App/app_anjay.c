@@ -24,6 +24,7 @@
 #include <anjay/core.h>
 #include <anjay/security.h>
 #include <anjay/server.h>
+#include <avsystem/coap/udp.h>
 
 /* Standalone objects */
 #include <standalone_security.h>
@@ -33,6 +34,17 @@
 
 /* ===== avs_log handler — redirect to elog ===== */
 #include <avsystem/commons/avs_log.h>
+#include <avsystem/coap/udp.h>
+
+/* ===== CoAP parameters for cellular/PPP links ===== */
+/* Default ACK_TIMEOUT is 2s — too short for cellular round-trips.
+ * Increase to 4s; set ACK_RANDOM_FACTOR to 1.0 for deterministic timing. */
+static const avs_coap_udp_tx_params_t cellular_coap_tx_params = {
+    .ack_timeout       = { 4, 0 },  /* 4 seconds */
+    .ack_random_factor = 1.0,
+    .max_retransmit    = 4,
+    .nstart            = 1
+};
 
 /* ===== Thread Configuration ===== */
 #define ANJAY_THREAD_PRIO       25
@@ -59,7 +71,7 @@
 #define BOOTSTRAP_PSK_KEY       "123456789"
 #endif
 
-#ifndef ANJAY_USE_BOOTSTRAP
+#if !ANJAY_USE_BOOTSTRAP
 /* ===== LwM2M Server Configuration ===== */
 /* Used only when ANJAY_USE_BOOTSTRAP=0 (direct connection) */
 #ifndef LWM2M_SERVER_URI
@@ -74,7 +86,7 @@
 #define LWM2M_PSK_KEY           "g9p8RkSKaayNWxN9"
 #endif
 
-#endif /* ANJAY_USE_BOOTSTRAP */
+#endif /* !ANJAY_USE_BOOTSTRAP */
 
 /* Endpoint name - must be unique per device */
 #ifndef ANJAY_ENDPOINT_NAME
@@ -89,16 +101,13 @@ extern TX_BYTE_POOL       *byte_pool_ptr;
 static TX_THREAD anjay_thread;
 static VOID     *anjay_stack_ptr;
 
-/* Socket registry accessor — native NetX event loop uses this */
-extern avs_net_socket_t **avs_net_get_sockets(int *count);
-
 static void anjay_log_handler(avs_log_level_t level,
                               const char *module,
                               const char *message) {
     switch (level) {
     case AVS_LOG_TRACE:
     case AVS_LOG_DEBUG:
-        elog_i("AVS TRACE", "[%s] %s", module, message);
+        elog_d("AVS", "[%s] %s", module, message);
         break;
     case AVS_LOG_INFO:
         elog_i("AVS INFO", "[%s] %s", module, message);
@@ -116,14 +125,18 @@ static void anjay_log_handler(avs_log_level_t level,
 
 /* ===== Anjay Thread Entry ===== */
 static void anjay_thread_entry(ULONG input) {
+    (void)input;
+
+    /* Install avs_log handler once — survives reconnect loops */
+    avs_log_set_handler(anjay_log_handler);
+    avs_log_set_default_level(AVS_LOG_TRACE);
+
+    /* Reconnect loop: restart Anjay after each PPP link-down */
+    while (1) {
     anjay_t *anjay = NULL;
     const anjay_dm_object_def_t **security_obj = NULL;
     const anjay_dm_object_def_t **server_obj = NULL;
     int result;
-
-    /* Install avs_log handler so we can see internal errors */
-    avs_log_set_handler(anjay_log_handler);
-    avs_log_set_default_level(AVS_LOG_TRACE);
 
     elog_i("ANJAY", "Waiting for NTP sync (implies PPP link-up)...");
 
@@ -141,15 +154,17 @@ static void anjay_thread_entry(ULONG input) {
         .confirmable_notifications = false,
         .in_buffer_size  = 1500,   /* CoAP receive buffer — must be > 0 */
         .out_buffer_size = 1500,   /* CoAP send buffer — must be > 0 */
+        .udp_tx_params   = &cellular_coap_tx_params,
 #ifndef IP_MTU
         .socket_config = {
             .forced_mtu = 1400  /* Safe margin below PPP MRU (1480) */
         },
 #endif
     };
-    elog_i("ANJAY", "Config: in_buf=%d, out_buf=%d, forced_mtu=%d",
+    elog_i("ANJAY", "Config: in_buf=%d, out_buf=%d, forced_mtu=%d, coap_ack_timeout=%ds",
            config.in_buffer_size, config.out_buffer_size,
-           config.socket_config.forced_mtu);
+           config.socket_config.forced_mtu,
+           (int)config.udp_tx_params->ack_timeout.seconds);
 
     /* ===== 2. Create Anjay Instance ===== */
     anjay = anjay_new(&config);
@@ -290,6 +305,14 @@ static void anjay_thread_entry(ULONG input) {
             avs_time_duration_from_scalar(1, AVS_TIME_S);
 
     while (1) {
+        ULONG link_flags;
+        /* Use TX_OR (read-only) so NTP thread can also detect link-down */
+        UINT link_rc = tx_event_flags_get(&ppp_events, PPP_EVT_LINK_DOWN,
+                                           TX_OR, &link_flags, TX_NO_WAIT);
+        if (link_rc == TX_SUCCESS) {
+            elog_w("ANJAY", "PPP link down — exiting event loop");
+            break;
+        }
         (void) anjay_event_loop_run(anjay, loop_timeout);
     }
 
@@ -297,7 +320,9 @@ cleanup:
     if (anjay) {
         anjay_delete(anjay);
     }
-    elog_e("ANJAY", "Anjay thread exited");
+    elog_i("ANJAY", "Anjay cleaned up, waiting for next PPP connection...");
+
+    } /* end reconnect while(1) */
 }
 
 /* ===== Public Functions ===== */

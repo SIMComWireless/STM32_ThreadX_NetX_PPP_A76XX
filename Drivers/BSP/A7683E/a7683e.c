@@ -61,14 +61,14 @@ const a7683e_info_t *a7683e_get_info(void)
  */
 int a7683e_get_rssi(void)
 {
-    char resp_buf[A7683E_RESP_BUF_SIZE];
+    char rssi_resp[A7683E_RESP_BUF_SIZE];
     UINT status;
 
-    status = a7683e_send_at("AT+CSQ", resp_buf, sizeof(resp_buf), A7683E_DEFAULT_TIMEOUT);
+    status = a7683e_send_at("AT+CSQ", rssi_resp, sizeof(rssi_resp), A7683E_DEFAULT_TIMEOUT);
     if (status == A7683E_OK)
     {
         int rssi_raw = 0;
-        char *p = strstr(resp_buf, "+CSQ:");
+        char *p = strstr(rssi_resp, "+CSQ:");
         if (p && sscanf(p, "+CSQ: %d", &rssi_raw) == 1)
         {
             if (rssi_raw == 0)       return -113;
@@ -118,22 +118,22 @@ static void parse_ati(const char *ati_buf)
 
         size_t key_len = (size_t)(key_end - line);
 
-        if (key_len == 13 && strncmp(line, "Manufacturer:", 13) == 0) {
+        if (key_len == 13 && strncmp(line, "Manufacturer", key_len) == 0) {
             if (val_len >= sizeof(modem_info.manufacturer)) val_len = sizeof(modem_info.manufacturer) - 1;
             memcpy(modem_info.manufacturer, val, val_len);
             modem_info.manufacturer[val_len] = '\0';
         }
-        else if (key_len == 5 && strncmp(line, "Model:", 6) == 0) {
+        else if (key_len == 5 && strncmp(line, "Model", key_len) == 0) {
             if (val_len >= sizeof(modem_info.model)) val_len = sizeof(modem_info.model) - 1;
             memcpy(modem_info.model, val, val_len);
             modem_info.model[val_len] = '\0';
         }
-        else if (key_len == 8 && strncmp(line, "Revision:", 9) == 0) {
+        else if (key_len == 8 && strncmp(line, "Revision", key_len) == 0) {
             if (val_len >= sizeof(modem_info.revision)) val_len = sizeof(modem_info.revision) - 1;
             memcpy(modem_info.revision, val, val_len);
             modem_info.revision[val_len] = '\0';
         }
-        else if (key_len == 4 && strncmp(line, "IMEI:", 5) == 0) {
+        else if (key_len == 4 && strncmp(line, "IMEI", key_len) == 0) {
             if (val_len >= sizeof(modem_info.imei)) val_len = sizeof(modem_info.imei) - 1;
             memcpy(modem_info.imei, val, val_len);
             modem_info.imei[val_len] = '\0';
@@ -173,12 +173,13 @@ uint16_t a7683e_drain_overflow(uint8_t *dst, uint16_t max_len)
 static UINT wait_for_response(const char *keyword, char *buf, uint16_t buf_size, uint32_t timeout_ms)
 {
     uint16_t pos = 0;
-    uint32_t deadline = tx_time_get() + (timeout_ms * TX_TIMER_TICKS_PER_SECOND / 1000);
+    uint32_t start = tx_time_get();
+    uint32_t ticks = timeout_ms * TX_TIMER_TICKS_PER_SECOND / 1000;
 
     memset(buf, 0, buf_size);
     overflow_len = 0;
 
-    while (tx_time_get() < deadline)
+    while ((tx_time_get() - start) < ticks)
     {
         /* If buffer is full, shift old data out to make room for new bytes.
          * Keeps the most recent data (most likely to contain the keyword). */
@@ -207,7 +208,7 @@ static UINT wait_for_response(const char *keyword, char *buf, uint16_t buf_size,
             if (line_end)
             {
                 uint16_t excess = (uint16_t)(buf + pos - line_end - 1);
-                if (excess > 0 && excess < sizeof(overflow_buf))
+                if (excess > 0 && excess <= sizeof(overflow_buf) - overflow_len)
                 {
                     memcpy(overflow_buf, line_end + 1, excess);
                     overflow_len = excess;
@@ -403,7 +404,10 @@ UINT a7683e_send_at(const char *cmd, char *resp, uint16_t resp_len, uint32_t tim
     else
     {
         uint8_t cmd_buf[256];
-        if (cmd_len + 1 > sizeof(cmd_buf)) return A7683E_ERROR;
+        if (cmd_len + 1 > sizeof(cmd_buf)) {
+            elog_e(TAG, "AT command too long (%u bytes)", (unsigned)cmd_len);
+            return A7683E_ERROR;
+        }
         memcpy(cmd_buf, cmd, cmd_len);
         cmd_buf[cmd_len] = '\r';
         modem_serial->write(modem_serial, cmd_buf, cmd_len + 1);
@@ -727,7 +731,7 @@ static volatile uint8_t cmux_at_ready;
 static void cmux_at_rx(uint8_t dlci, const uint8_t *data, uint16_t len)
 {
     (void)dlci;
-    if (cmux_at_len + len < sizeof(cmux_at_buf) - 1) {
+    if (cmux_at_len + len <= sizeof(cmux_at_buf) - 1) {
         memcpy(cmux_at_buf + cmux_at_len, data, len);
         cmux_at_len += len;
         cmux_at_buf[cmux_at_len] = '\0';
@@ -774,10 +778,11 @@ UINT a7683e_cmux_start(void)
     {
         char cmux_resp[256] = {0};
         uint16_t pos = 0;
-        uint32_t deadline = tx_time_get() + (3 * TX_TIMER_TICKS_PER_SECOND);
+        uint32_t start = tx_time_get();
+        uint32_t ticks = 3 * TX_TIMER_TICKS_PER_SECOND;
         uint8_t ok_found = 0;
 
-        while (tx_time_get() < deadline)
+        while ((tx_time_get() - start) < ticks)
         {
             uint16_t n = modem_serial->read(modem_serial, (uint8_t *)cmux_resp + pos,
                                             sizeof(cmux_resp) - 1 - pos, 50);
@@ -831,6 +836,7 @@ UINT a7683e_cmux_send_at_dlci(uint8_t dlci, const char *cmd, char *resp,
                                uint16_t resp_len, uint32_t timeout_ms)
 {
     if (!cmux_is_active(&g_cmux)) return A7683E_ERROR;
+    if (resp_len < 2) return A7683E_ERROR;
 
     /* Build command with \r terminator (auto-append if not present) */
     char buf[256];

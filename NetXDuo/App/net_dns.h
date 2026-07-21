@@ -11,6 +11,11 @@
 #include "nx_api.h"
 
 /**
+  * @brief  Early init — create DNS mutex. Call once from MX_NetXDuo_Init().
+  */
+void dns_early_init(void);
+
+/**
   * @brief  Initialize DNS client — call after PPP link-up.
   *         Creates the global DNS client, adds carrier-assigned + fallback
   *         DNS servers. Idempotent (safe to call multiple times).

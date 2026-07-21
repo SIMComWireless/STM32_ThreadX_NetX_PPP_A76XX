@@ -355,6 +355,7 @@ void elog_set_filter_lvl(uint8_t level) {
  */
 void elog_set_filter_tag(const char *tag) {
     strncpy(elog.filter.tag, tag, ELOG_FILTER_TAG_MAX_LEN);
+    elog.filter.tag[ELOG_FILTER_TAG_MAX_LEN] = '\0';
 }
 
 /**
@@ -364,6 +365,7 @@ void elog_set_filter_tag(const char *tag) {
  */
 void elog_set_filter_kw(const char *keyword) {
     strncpy(elog.filter.keyword, keyword, ELOG_FILTER_KW_MAX_LEN);
+    elog.filter.keyword[ELOG_FILTER_KW_MAX_LEN] = '\0';
 }
 
 /**

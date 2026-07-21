@@ -43,13 +43,13 @@ extern "C" {
 
 #define USE_STATIC_ALLOCATION                    1
 
-#define TX_APP_MEM_POOL_SIZE                     1024*4
+#define TX_APP_MEM_POOL_SIZE                     (1024*4)
 
 /* 80KB: 60KB packet pool + 16KB IP/stacks/ARP + margin */
 #define NX_APP_MEM_POOL_SIZE                     (1024*200)
 
 /* 160KB: 128KB USBX system + 6KB threads + 26KB NetX resources + margin */
-#define UX_HOST_APP_MEM_POOL_SIZE                1024*100
+#define UX_HOST_APP_MEM_POOL_SIZE                (1024*100)
 
 /* USER CODE BEGIN EC */
 

@@ -66,8 +66,10 @@
 /*---------------------------------------------------------------------------*/
 /* enable asynchronous output mode */
 #define ELOG_ASYNC_OUTPUT_ENABLE
-/* the highest output level for async mode, other level will sync output */
-#define ELOG_ASYNC_OUTPUT_LVL                    ELOG_LVL_ASSERT
+/* the highest output level for async mode, other level will sync output.
+ * Set to DEBUG so INFO/WARN/ERROR/ASSERT all use the async ring buffer,
+ * preventing high-priority threads from blocking on slow UART output. */
+#define ELOG_ASYNC_OUTPUT_LVL                    ELOG_LVL_DEBUG
 /* buffer size for asynchronous output mode — must be large enough to absorb
  * bursts from multiple threads while the DMA output drains the buffer.
  * At 115200 baud ~13 ms per 150-byte line, 64× gives ~1 second of buffering. */

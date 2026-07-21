@@ -1,3 +1,6 @@
 {
-    "cmake.sourceDirectory": "C:/Users/Administrator/Desktop/SIMCom/STM32/STM32L4_Cube/A7683E_PPP/Middlewares/ST/netxduo"
+    "cmake.sourceDirectory": "C:/Users/Administrator/Desktop/SIMCom/STM32/STM32L4_Cube/A7683E_PPP/Middlewares/ST/netxduo",
+    "stm32-for-vscode.openOCDPath": false,
+    "stm32-for-vscode.makePath": false,
+    "stm32-for-vscode.armToolchainPath": false
 }

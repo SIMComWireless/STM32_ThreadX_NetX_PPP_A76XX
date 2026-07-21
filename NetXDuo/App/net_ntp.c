@@ -77,6 +77,7 @@ static void unix_to_ymd(uint32_t unix_time, uint32_t *year, uint32_t *month, uin
  * ============================================================================ */
 
 static NX_SNTP_CLIENT sntp_client;
+static UINT ntp_done_signaled = NX_FALSE;
 
 void ntp_thread_entry(ULONG param)
 {
@@ -216,11 +217,14 @@ void ntp_thread_entry(ULONG param)
                                 elog_d(TAG_NTP, "Unix timestamp: %lu", (unsigned long)unix_time);
 
                                 /* ---- Step 3: Set RTC ---- */
-                                uint32_t s = unix_time % 60;
-                                uint32_t m = (unix_time / 60) % 60;
-                                uint32_t h = ((unix_time / 3600) + NTP_TZ_OFFSET_HOURS) % 24;
+                                /* Apply timezone offset BEFORE computing date/time/weekday */
+                                uint32_t tz_unix = unix_time + (NTP_TZ_OFFSET_HOURS * 3600U);
+                                uint32_t s = tz_unix % 60;
+                                uint32_t m = (tz_unix / 60) % 60;
+                                uint32_t h = (tz_unix / 3600) % 24;
 
-                                elog_d(TAG_NTP, "Time (UTC+8): %02lu:%02lu:%02lu", h, m, s);
+                                elog_d(TAG_NTP, "Time (UTC+%d): %02lu:%02lu:%02lu",
+                                       NTP_TZ_OFFSET_HOURS, h, m, s);
 
                                 RTC_TimeTypeDef sTime = {0};
                                 RTC_DateTypeDef sDate = {0};
@@ -234,9 +238,9 @@ void ntp_thread_entry(ULONG param)
                                 }
 
                                 uint32_t rtc_year, rtc_month, rtc_day;
-                                unix_to_ymd(unix_time, &rtc_year, &rtc_month, &rtc_day);
+                                unix_to_ymd(tz_unix, &rtc_year, &rtc_month, &rtc_day);
 
-                                uint32_t days = unix_time / 86400;
+                                uint32_t days = tz_unix / 86400;
                                 sDate.WeekDay = (uint8_t)((days + 4) % 7);
                                 sDate.Year    = (uint8_t)(rtc_year - 2000);
                                 sDate.Month   = (uint8_t)rtc_month;
@@ -274,7 +278,6 @@ void ntp_thread_entry(ULONG param)
             }
 
             /* Signal NTP done on first successful sync — Anjay can start now */
-            static UINT ntp_done_signaled = NX_FALSE;
             if (sntp_ok && !ntp_done_signaled)
             {
                 tx_event_flags_set(&ppp_events, PPP_EVT_NTP_DONE, TX_OR);
@@ -303,6 +306,8 @@ void ntp_thread_entry(ULONG param)
         }
 
 ppp_link_down:
+        /* Reset so Anjay can be notified again on next successful sync */
+        ntp_done_signaled = NX_FALSE;
         elog_d(TAG_NTP, "Waiting for PPP reconnection...");
     }
 }

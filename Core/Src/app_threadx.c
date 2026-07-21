@@ -21,7 +21,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "app_threadx.h"
 
-/* Private includes ----------------------------------------------------------*/
+/* Private includes ---------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "main.h"
 #include "elog.h"

@@ -39,7 +39,7 @@
  * @return copied length
  */
 size_t elog_strcpy(size_t cur_len, char *dst, const char *src) {
-    const char *src_old = src;
+    size_t copied = 0;
 
     assert(dst);
     assert(src);
@@ -48,11 +48,12 @@ size_t elog_strcpy(size_t cur_len, char *dst, const char *src) {
         /* make sure destination has enough space */
         if (cur_len++ < ELOG_LINE_BUF_SIZE) {
             *dst++ = *src++;
+            copied++;
         } else {
             break;
         }
     }
-    return src - src_old;
+    return copied;
 }
 
 /**

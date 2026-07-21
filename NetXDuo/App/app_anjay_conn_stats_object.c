@@ -166,12 +166,12 @@ static int resource_read(anjay_t *anjay,
         return anjay_ret_i32(ctx, 0);  /* Not implemented */
 
     case RID_TX_DATA:
-        /* Convert bytes to KB */
-        return anjay_ret_i32(ctx, (int32_t)(stat_tx_bytes));
+        /* LwM2M spec: Tx Data in KB */
+        return anjay_ret_i32(ctx, (int32_t)(stat_tx_bytes / 1024));
 
     case RID_RX_DATA:
-        /* Convert bytes to KB */
-        return anjay_ret_i32(ctx, (int32_t)(stat_rx_bytes));
+        /* LwM2M spec: Rx Data in KB */
+        return anjay_ret_i32(ctx, (int32_t)(stat_rx_bytes / 1024));
 
     case RID_MAX_MSG_SIZE:
         return anjay_ret_i32(ctx, (int32_t)stat_max_msg_size);
